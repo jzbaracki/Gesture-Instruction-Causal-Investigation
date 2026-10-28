@@ -1,0 +1,1418 @@
+---
+title: "Matching Participants Across Instructional Conditions"
+author: "John Zbaracki"
+date: "2026-10-01"
+output: github_document
+---
+
+## Overview
+
+Children were randomly assigned to speech-only or speech-and-gesture instruction. This is to test a matching scheme for the follow up experiment which only samples children with a visual indicator condition.
+
+Goal: Find a matching scheme that maintains our current findings but will allow us to compare two instructional conditions to the new third instructional condition. This can be using any features to match.
+
+**Covariates:** 
+- `AveragePretest_PR`: encoding pretest
+- `AveragePretest_EQ`: problem-solving (equivalence) pretest
+- `Pretest_VI_EQ`, `Pretest_VI_AE`: vignette pretests
+- `Grade`: matched exactly in some schemes
+- `MM`: Speeded math test performance
+
+Approach: 1:1 Mahalanobis-distance matching with `MatchIt`, comparing optimal and nearest-neighbor matching and testing caliper widths from 0.25 to 1.5 SD. Balance is judged by standardized mean differences (SMDs), using possible thresholds of |SMD| from .25 to 1.5. As the data is limited and low samples, larger SMDs than normal may be necessary.
+
+Results: The best matching scheme is one that matches purely on pretest equivalence problem-solving. There is too much variance to use multiple measures as pairings quickly fall to under 2/3 of our data.
+
+**Data availability:** Participant data are not included in this repository.
+
+
+
+## Setup
+
+```{r load-packages}
+library(lme4)
+library(emmeans)
+library(corrr)
+library(psych)
+library(GPArotation)
+library(ggsignif)
+library(mediation)
+library(lavaan)
+library(lavaanPlot)
+library(ggh4x)
+#library(semPlot)
+#library(semTools)
+library(tidyverse)
+library(MatchIt)
+```
+
+
+
+
+
+
+
+
+
+```{r load-data}
+load('ParticipantMatchingDatasetTemp_10_2_26.Rdat')
+```
+
+
+
+
+
+
+```{r create-match-condition}
+#Create Match Condition
+ParticipantMatchingDataset = ParticipantMatchingDataset %>%
+  dplyr::mutate(
+    Grade = as.numeric(Grade),
+
+    MatchCondition = ifelse(
+      Condition == "Speech and Gesture",
+      1,
+      0
+    )
+  )
+```
+
+
+## Exploratory matches
+
+### Optimal matching
+
+Optimal 1:1 Mahalanobis matching, exact on grade, for each outcome's covariate set.
+
+```{r optimal-encoding}
+#Encoding match testing
+
+
+EncodingMatch = MatchIt::matchit(
+  MatchCondition ~
+    AveragePretest_PR +
+    AveragePretest_EQ,
+
+  data = ParticipantMatchingDataset,
+
+  method = "optimal",
+  distance = "mahalanobis",
+
+  exact = ~ Grade,
+
+  ratio = 1
+)
+
+
+summary(
+  EncodingMatch,
+  standardize = TRUE
+)
+```
+
+
+
+
+
+
+```{r optimal-vignette-overall}
+
+VignetteOverallMatch = MatchIt::matchit(
+  MatchCondition ~
+    AveragePretest_PR +
+    AveragePretest_VI,
+
+  data = ParticipantMatchingDataset,
+
+  method = "optimal",
+  distance = "mahalanobis",
+
+  exact = ~ Grade,
+
+  ratio = 1
+)
+```
+
+```{r optimal-vignette-eq}
+
+VignetteEQMatch = MatchIt::matchit(
+  MatchCondition ~
+    AveragePretest_PR +
+    Pretest_VI_EQ,
+
+  data = ParticipantMatchingDataset,
+
+  method = "optimal",
+  distance = "mahalanobis",
+
+  exact = ~ Grade,
+
+  ratio = 1)
+
+summary(
+  VignetteEQMatch,
+  standardize = TRUE
+)
+
+```
+
+```{r optimal-vignette-ae}
+VignetteAEMatch = MatchIt::matchit(
+  MatchCondition ~
+    AveragePretest_PR +
+    Pretest_VI_AE,
+
+  data = ParticipantMatchingDataset,
+
+  method = "optimal",
+  distance = "mahalanobis",
+
+  exact = ~ Grade,
+
+  ratio = 1)
+
+summary(
+  VignetteAEMatch,
+  standardize = TRUE)
+```
+
+
+
+### Nearest-neighbor matching with calipers
+
+```{r nearest-encoding}
+EncodingMatch = MatchIt::matchit(
+  MatchCondition ~
+    AveragePretest_PR +
+    AveragePretest_EQ,
+
+  data = ParticipantMatchingDataset,
+
+  method = "nearest",
+  distance = "mahalanobis",
+
+  exact = ~ Grade,
+
+  caliper = c(
+AveragePretest_PR = 1,
+AveragePretest_EQ = 1),
+  ratio = 1
+)
+
+summary(
+  EncodingMatch,
+  standardize = TRUE
+)
+
+
+
+
+EncodingMatch = MatchIt::matchit(
+  MatchCondition ~
+    AveragePretest_PR,
+
+  data = ParticipantMatchingDataset,
+
+  method = "nearest",
+  distance = "mahalanobis",
+
+  exact = ~ Grade,
+
+  caliper = c(
+AveragePretest_PR = .5),
+  ratio = 1
+)
+
+summary(
+  EncodingMatch,
+  standardize = TRUE
+)
+
+EncodingMatch = MatchIt::matchit(
+  MatchCondition ~
+    AveragePretest_EQ,
+
+  data = ParticipantMatchingDataset,
+
+  method = "nearest",
+  distance = "mahalanobis",
+
+  exact = ~ Grade,
+
+  caliper = c(
+AveragePretest_PR = .5),
+  ratio = 1
+)
+
+summary(
+  EncodingMatch,
+  standardize = TRUE
+)
+
+```
+
+
+
+
+
+
+
+## Caliper sensitivity: Encoding outcome
+
+Each scheme below is run at six caliper widths (0.25–1.5 SD). For every run, the table records how many participants remain in each condition and the standardized mean difference (SMD) between conditions on each covariate, so balance and sample size can be compared across schemes.
+
+
+### Problem-solving pretest only
+
+```{r caliper-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+CaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_EQ,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      caliper = c(
+        AveragePretest_EQ = current_caliper),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+EQOnlyComparisons = dplyr::bind_rows(CaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ))
+    )
+
+EQOnlyComparisons
+```
+
+### Encoding pretest only
+
+
+
+```{r caliper-encoding}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+CaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_PR,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+      
+      caliper = c(
+        AveragePretest_PR = current_caliper),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_Encoding = smd(
+        gesture$AveragePretest_PR,
+        speech$AveragePretest_PR
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+EncodingOnlyComparisons = dplyr::bind_rows(CaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_Encoding)
+    )
+  )
+
+EncodingOnlyComparisons
+```
+
+### Grade (exact) + problem-solving pretest
+
+
+```{r caliper-grade-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+CaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_EQ,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      exact = ~ Grade,
+
+      caliper = c(
+        AveragePretest_EQ = current_caliper),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+EQ_Grade_MatchingComparisons = dplyr::bind_rows(CaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ))
+    )
+
+EQ_Grade_MatchingComparisons
+```
+
+### Grade (exact) + encoding pretest
+
+
+
+```{r caliper-grade-encoding}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+CaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_PR,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      exact = ~ Grade,
+
+      caliper = c(
+        AveragePretest_PR = current_caliper),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_Encoding = smd(
+        gesture$AveragePretest_PR,
+        speech$AveragePretest_PR
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+Grade_Encoding_MatchingComparisons = dplyr::bind_rows(CaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_Encoding)
+    )
+  )
+
+Grade_Encoding_MatchingComparisons
+```
+
+### Encoding + problem-solving pretests (no grade)
+
+
+```{r caliper-encoding-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+CaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_PR +
+        AveragePretest_EQ,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      caliper = c(
+        AveragePretest_PR = current_caliper,
+        AveragePretest_EQ = current_caliper
+      ),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_Encoding = smd(
+        gesture$AveragePretest_PR,
+        speech$AveragePretest_PR
+      ),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+EQ_Encoding_MatchingComparisons = dplyr::bind_rows(CaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ),
+      abs(SMD_Encoding)
+    )
+  )
+
+EQ_Encoding_MatchingComparisons
+```
+
+
+### Grade (exact) + encoding + problem-solving pretests
+
+
+```{r caliper-grade-encoding-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+CaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_PR +
+        AveragePretest_EQ,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      exact = ~ Grade,
+
+      caliper = c(
+        AveragePretest_PR = current_caliper,
+        AveragePretest_EQ = current_caliper
+      ),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_Encoding = smd(
+        gesture$AveragePretest_PR,
+        speech$AveragePretest_PR
+      ),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+Grade_Encoding_EQ_ComparisonMatching = dplyr::bind_rows(CaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ),
+      abs(SMD_Encoding)
+    )
+  )
+
+Grade_Encoding_EQ_ComparisonMatching
+```
+
+
+## Comparing schemes: Encoding outcome
+
+The combined table summarizes each scheme × caliper run by its worst covariate imbalance (max |SMD|), mean imbalance, the number of covariates above the .10 and .25 thresholds, and the proportion of each condition retained.
+
+
+```{r compare-encoding}
+AllCaliperComparisons = dplyr::bind_rows(
+  list(
+    "EQ Only" = EQOnlyComparisons,
+    "Encoding Only" = EncodingOnlyComparisons,
+    "EQ + Encoding" = EQ_Encoding_MatchingComparisons,
+    "Grade + Encoding" = Grade_Encoding_MatchingComparisons,
+    "EQ + Grade" = EQ_Grade_MatchingComparisons,
+    "Grade + Encoding + EQ" = Grade_Encoding_EQ_ComparisonMatching
+  ),
+  .id = "Scheme"
+) %>%
+  dplyr::select(-dplyr::any_of("Max_Primary_SMD")) %>%
+  dplyr::mutate(
+    Scheme = factor(Scheme, levels = unique(Scheme)),
+    N_Pairs = pmin(N_Speech, N_Gesture)
+  )
+
+AllCaliperComparisons
+```
+
+```{r compare-encoding-smd-table}
+SMDWide = AllCaliperComparisons %>%
+  dplyr::select(
+    Scheme, Caliper, N_Pairs,
+    dplyr::starts_with("SMD_")
+  ) %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::starts_with("SMD_"), ~ round(.x, 3))
+  ) %>%
+  dplyr::arrange(Caliper, Scheme)
+
+SMDWide
+```
+```{r compare-encoding-summary}
+AvailableN = ParticipantMatchingDataset %>%
+  dplyr::count(Condition) %>%
+  tidyr::pivot_wider(names_from = Condition, values_from = n)
+
+Total_Speech = AvailableN$`Speech Only`
+Total_Gesture = AvailableN$`Speech and Gesture`
+
+SMDLong = AllCaliperComparisons %>%
+  tidyr::pivot_longer(
+    cols = dplyr::starts_with("SMD_"),
+    names_to = "Covariate",
+    names_prefix = "SMD_",
+    values_to = "SMD",
+    values_drop_na = TRUE
+  )
+
+SchemeSummary = SMDLong %>%
+  dplyr::group_by(Scheme, Caliper, N_Speech, N_Gesture, N_Pairs) %>%
+  dplyr::summarise(
+    N_Covariates = dplyr::n(),
+    Max_Abs_SMD = max(abs(SMD)),
+    Mean_Abs_SMD = mean(abs(SMD)),
+    N_Over_.10 = sum(abs(SMD) > .10),
+    N_Over_.25 = sum(abs(SMD) > .25),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    Retention_Speech = N_Speech / Total_Speech,
+    Retention_Gesture = N_Gesture / Total_Gesture
+  ) %>%
+  dplyr::arrange(Max_Abs_SMD, dplyr::desc(N_Pairs))
+
+SchemeSummary
+```
+
+
+```{r compare-encoding-best}
+BestUnder.10 = SchemeSummary %>%
+  dplyr::filter(Max_Abs_SMD < .10) %>%
+  dplyr::arrange(dplyr::desc(N_Pairs), Max_Abs_SMD)
+
+BestUnder.25 = SchemeSummary %>%
+  dplyr::filter(Max_Abs_SMD < .25) %>%
+  dplyr::arrange(dplyr::desc(N_Pairs), Max_Abs_SMD)
+
+BestUnder.10
+BestUnder.25
+```
+```{r compare-encoding-best-per-scheme}
+BestPerScheme = SchemeSummary %>%
+  dplyr::group_by(Scheme) %>%
+  dplyr::arrange(Max_Abs_SMD, dplyr::desc(N_Pairs), .by_group = TRUE) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup()
+
+BestPerScheme
+```
+
+
+
+Balance (max |SMD|) plotted against the number of matched pairs, with each point labeled by caliper width. Dashed lines mark the .10 and .25 thresholds.
+
+```{r compare-encoding-plot}
+ggplot2::ggplot(
+  SchemeSummary,
+  ggplot2::aes(x = N_Pairs, y = Max_Abs_SMD, color = Scheme)
+) +
+  ggplot2::geom_hline(yintercept = c(.10, .25), linetype = "dashed", color = "grey50") +
+  ggplot2::geom_path(ggplot2::aes(group = Scheme)) +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::geom_text(
+    ggplot2::aes(label = Caliper),
+    vjust = -0.8, size = 3, show.legend = FALSE
+  ) +
+  ggplot2::labs(
+    x = "Matched pairs",
+    y = "Max |SMD| across reported covariates",
+    title = "Balance vs. sample size by matching scheme"
+  ) +
+  ggplot2::theme_minimal()
+```
+
+
+
+
+
+## Caliper sensitivity: Vignette outcomes
+
+### Vignette EQ
+
+#### Vignette EQ pretest only
+
+
+```{r caliper-vi-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+VignetteEQCaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        Pretest_VI_EQ,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      caliper = c(
+        AveragePretest_EQ = current_caliper,
+        Pretest_VI_EQ = current_caliper
+      ),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_VI_EQ = smd(
+        gesture$Pretest_VI_EQ,
+        speech$Pretest_VI_EQ
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+VignetteEQCaliperComparison.OnlyVIEQ = dplyr::bind_rows(VignetteEQCaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ),
+      abs(SMD_VI_EQ)
+    )
+  )
+
+VignetteEQCaliperComparison.OnlyVIEQ
+
+
+```
+
+#### Vignette EQ + problem-solving pretests
+
+
+
+```{r caliper-vi-eq-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+VignetteEQCaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_EQ +
+        Pretest_VI_EQ,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      caliper = c(
+        AveragePretest_EQ = current_caliper,
+        Pretest_VI_EQ = current_caliper
+      ),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_VI_EQ = smd(
+        gesture$Pretest_VI_EQ,
+        speech$Pretest_VI_EQ
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+VignetteEQCaliperComparison.VIEQ.EQ = dplyr::bind_rows(VignetteEQCaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ),
+      abs(SMD_VI_EQ)
+    )
+  )
+
+VignetteEQCaliperComparison.VIEQ.EQ
+
+
+```
+
+
+
+#### Grade (exact) + vignette EQ + problem-solving pretests
+
+
+```{r caliper-grade-vi-eq-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+VignetteEQCaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_EQ +
+        Pretest_VI_EQ,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      exact = ~ Grade,
+
+      caliper = c(
+        AveragePretest_EQ = current_caliper,
+        Pretest_VI_EQ = current_caliper
+      ),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_VI_EQ = smd(
+        gesture$Pretest_VI_EQ,
+        speech$Pretest_VI_EQ
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+VignetteEQCaliperComparison.VIEQ.EQ.Grade = dplyr::bind_rows(VignetteEQCaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ),
+      abs(SMD_VI_EQ)
+    )
+  )
+
+VignetteEQCaliperComparison.VIEQ.EQ.Grade
+
+
+```
+
+### Vignette AE
+
+
+
+
+
+#### Vignette AE pretest only
+
+
+
+
+```{r caliper-vi-ae}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+VignetteAECaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        Pretest_VI_AE,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      caliper = c(
+        AveragePretest_EQ = current_caliper,
+        Pretest_VI_AE = current_caliper
+      ),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_VI_AE = smd(
+        gesture$Pretest_VI_AE,
+        speech$Pretest_VI_AE
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+VignetteAECaliperComparison.OnlyVI_AE = dplyr::bind_rows(VignetteAECaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ),
+      abs(SMD_VI_AE)
+    )
+  )
+
+VignetteAECaliperComparison.OnlyVI_AE
+
+
+```
+
+#### Vignette AE + problem-solving pretests
+
+
+
+```{r caliper-vi-ae-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+VignetteAECaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_EQ +
+        Pretest_VI_AE,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      exact = ~ Grade,
+
+      caliper = c(
+        AveragePretest_EQ = current_caliper,
+        Pretest_VI_AE = current_caliper
+      ),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_VI_AE = smd(
+        gesture$Pretest_VI_AE,
+        speech$Pretest_VI_AE
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+VignetteAECaliperComparison.AE_EQ = dplyr::bind_rows(VignetteAECaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ),
+      abs(SMD_VI_AE)
+    )
+  )
+
+VignetteAECaliperComparison.AE_EQ
+```
+
+#### Grade (exact) + vignette AE + problem-solving pretests
+
+
+```{r caliper-grade-vi-ae-eq}
+caliper_values = c(.25, .5, .75, 1, 1.25, 1.5)
+
+
+VignetteAECaliperResults = lapply(
+  caliper_values,
+  function(current_caliper) {
+
+    match_object = MatchIt::matchit(
+      MatchCondition ~
+        AveragePretest_EQ +
+        Pretest_VI_AE,
+
+      data = ParticipantMatchingDataset,
+
+      method = "nearest",
+      distance = "mahalanobis",
+
+      exact = ~ Grade,
+
+      caliper = c(
+        AveragePretest_EQ = current_caliper,
+        Pretest_VI_AE = current_caliper
+      ),
+
+      std.caliper = TRUE,
+      ratio = 1,
+      replace = FALSE
+    )
+
+    matched_data = MatchIt::match_data(match_object)
+
+    speech = matched_data %>%
+      dplyr::filter(Condition == "Speech Only")
+
+    gesture = matched_data %>%
+      dplyr::filter(Condition == "Speech and Gesture")
+
+    data.frame(
+      Caliper = current_caliper,
+      N_Speech = nrow(speech),
+      N_Gesture = nrow(gesture),
+      SMD_EQ = smd(
+        gesture$AveragePretest_EQ,
+        speech$AveragePretest_EQ
+      ),
+      SMD_VI_AE = smd(
+        gesture$Pretest_VI_AE,
+        speech$Pretest_VI_AE
+      ),
+      SMD_MM = smd(
+        gesture$MM,
+        speech$MM
+      )
+    )
+  }
+)
+
+VignetteAECaliperComparison.AE_EQ_Grade = dplyr::bind_rows(VignetteAECaliperResults) %>%
+  dplyr::mutate(
+    Max_Primary_SMD = pmax(
+      abs(SMD_EQ),
+      abs(SMD_VI_AE)
+    )
+  )
+
+VignetteAECaliperComparison.AE_EQ_Grade
+```
+
+## Comparing schemes: Vignette outcomes
+
+The problem-solving-only schemes from the Encoding section are included as reference points.
+
+
+```{r combine-vignette-schemes}
+AllVignetteAEComparisons = dplyr::bind_rows(
+  list(
+    "EQ Only" = EQOnlyComparisons,
+    "EQ + Grade" = EQ_Grade_MatchingComparisons,
+    "VI_AE Only" = VignetteAECaliperComparison.OnlyVI_AE,
+    "VI_AE + EQ" = VignetteAECaliperComparison.AE_EQ,
+    "VI_AE + EQ + Grade" = VignetteAECaliperComparison.AE_EQ_Grade
+  ),
+  .id = "Scheme"
+) %>%
+  dplyr::select(-dplyr::any_of("Max_Primary_SMD")) %>%
+  dplyr::mutate(
+    Scheme = factor(Scheme, levels = unique(Scheme)),
+    N_Pairs = pmin(N_Speech, N_Gesture)
+  )
+
+AllVignetteAEComparisons
+
+
+AllVignetteEQComparisons = dplyr::bind_rows(
+  list(
+    "EQ Only" = EQOnlyComparisons,
+    "EQ + Grade" = EQ_Grade_MatchingComparisons,
+    "VI_EQ Only" = VignetteEQCaliperComparison.OnlyVIEQ,
+    "VI_EQ + EQ" = VignetteEQCaliperComparison.VIEQ.EQ,
+    "VI_EQ + EQ + Grade" = VignetteEQCaliperComparison.VIEQ.EQ.Grade
+  ),
+  .id = "Scheme"
+) %>%
+  dplyr::select(-dplyr::any_of("Max_Primary_SMD")) %>%
+  dplyr::mutate(
+    Scheme = factor(Scheme, levels = unique(Scheme)),
+    N_Pairs = pmin(N_Speech, N_Gesture)
+  )
+
+AllVignetteEQComparisons
+```
+
+### Comparison function
+
+`CompareMatchingSchemes()` repeats the Encoding comparison steps for any combined table: summary statistics, best schemes under each SMD threshold, the best caliper per scheme, a balance-vs-sample-size plot, and a covariate-level SMD heatmap.
+
+
+```{r fn-compare-schemes}
+CompareMatchingSchemes = function(combined, title_label) {
+
+  AvailableN = ParticipantMatchingDataset %>%
+    dplyr::count(Condition) %>%
+    tidyr::pivot_wider(names_from = Condition, values_from = n)
+
+  Total_Speech = AvailableN$`Speech Only`
+  Total_Gesture = AvailableN$`Speech and Gesture`
+
+  SMDWide = combined %>%
+    dplyr::select(
+      Scheme, Caliper, N_Pairs,
+      dplyr::starts_with("SMD_")
+    ) %>%
+    dplyr::mutate(
+      dplyr::across(dplyr::starts_with("SMD_"), ~ round(.x, 3))
+    ) %>%
+    dplyr::arrange(Caliper, Scheme)
+
+  SMDLong = combined %>%
+    tidyr::pivot_longer(
+      cols = dplyr::starts_with("SMD_"),
+      names_to = "Covariate",
+      names_prefix = "SMD_",
+      values_to = "SMD",
+      values_drop_na = TRUE
+    )
+
+  SchemeSummary = SMDLong %>%
+    dplyr::group_by(Scheme, Caliper, N_Speech, N_Gesture, N_Pairs) %>%
+    dplyr::summarise(
+      N_Covariates = dplyr::n(),
+      Max_Abs_SMD = max(abs(SMD)),
+      Mean_Abs_SMD = mean(abs(SMD)),
+      N_Over_.10 = sum(abs(SMD) > .10),
+      N_Over_.25 = sum(abs(SMD) > .25),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(
+      Retention_Speech = N_Speech / Total_Speech,
+      Retention_Gesture = N_Gesture / Total_Gesture
+    ) %>%
+    dplyr::arrange(Max_Abs_SMD, dplyr::desc(N_Pairs))
+
+  BestUnder.10 = SchemeSummary %>%
+    dplyr::filter(Max_Abs_SMD < .10) %>%
+    dplyr::arrange(dplyr::desc(N_Pairs), Max_Abs_SMD)
+
+  BestUnder.25 = SchemeSummary %>%
+    dplyr::filter(Max_Abs_SMD < .25) %>%
+    dplyr::arrange(dplyr::desc(N_Pairs), Max_Abs_SMD)
+
+  BestPerScheme = SchemeSummary %>%
+    dplyr::group_by(Scheme) %>%
+    dplyr::arrange(Max_Abs_SMD, dplyr::desc(N_Pairs), .by_group = TRUE) %>%
+    dplyr::slice(1) %>%
+    dplyr::ungroup()
+
+  TradeoffPlot = ggplot2::ggplot(
+    SchemeSummary,
+    ggplot2::aes(x = N_Pairs, y = Max_Abs_SMD, color = Scheme)
+  ) +
+    ggplot2::geom_hline(yintercept = c(.10, .25), linetype = "dashed", color = "grey50") +
+    ggplot2::geom_path(ggplot2::aes(group = Scheme)) +
+    ggplot2::geom_point(size = 2) +
+    ggplot2::geom_text(
+      ggplot2::aes(label = Caliper),
+      vjust = -0.8, size = 3, show.legend = FALSE
+    ) +
+    ggplot2::labs(
+      x = "Matched pairs",
+      y = "Max |SMD| across reported covariates",
+      title = paste0(title_label, ": balance vs. sample size")
+    ) +
+    ggplot2::theme_minimal()
+
+  Heatmap = ggplot2::ggplot(
+    SMDLong,
+    ggplot2::aes(x = Covariate, y = Scheme, fill = abs(SMD))
+  ) +
+    ggplot2::geom_tile(color = "white") +
+    ggplot2::geom_text(ggplot2::aes(label = round(SMD, 2)), size = 3) +
+    ggplot2::scale_fill_gradient(low = "white", high = "firebrick", limits = c(0, NA)) +
+    ggplot2::facet_wrap(~ Caliper, labeller = ggplot2::label_both) +
+    ggplot2::labs(
+      fill = "|SMD|", x = NULL, y = NULL,
+      title = paste0(title_label, ": covariate-level SMDs")
+    ) +
+    ggplot2::theme_minimal()
+
+  list(
+    SMDWide = SMDWide,
+    SMDLong = SMDLong,
+    SchemeSummary = SchemeSummary,
+    BestUnder.10 = BestUnder.10,
+    BestUnder.25 = BestUnder.25,
+    BestPerScheme = BestPerScheme,
+    TradeoffPlot = TradeoffPlot,
+    Heatmap = Heatmap
+  )
+}
+```
+
+
+
+### Results: Vignette EQ
+
+```{r results-vignette-eq}
+VignetteEQResults = CompareMatchingSchemes(AllVignetteEQComparisons, "Vignette EQ")
+
+VignetteEQResults$SMDWide
+VignetteEQResults$SchemeSummary
+VignetteEQResults$BestUnder.10
+VignetteEQResults$BestUnder.25
+VignetteEQResults$BestPerScheme
+VignetteEQResults$TradeoffPlot
+```
+
+
+
+### Results: Vignette AE
+
+
+```{r results-vignette-ae}
+VignetteAEResults = CompareMatchingSchemes(AllVignetteAEComparisons, "Vignette AE")
+
+VignetteAEResults$SMDWide
+VignetteAEResults$SchemeSummary
+VignetteAEResults$BestUnder.10
+VignetteAEResults$BestUnder.25
+VignetteAEResults$BestPerScheme
+VignetteAEResults$TradeoffPlot
+```
+
+
+
+

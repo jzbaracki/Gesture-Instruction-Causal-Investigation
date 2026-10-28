@@ -1,0 +1,3725 @@
+---
+title: "Gesture Instruction and Children's Math Learning: Behavioral Analyses"
+author: "John Zbaracki"
+date: "2026-07-08"
+output: github_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Overview
+
+Behavioral analyses for a pretest–training–posttest study comparing math instruction with and without gesture. Sixty-four children were randomly assigned to speech-only (n = 32) or speech-and-gesture (n = 32) instruction.
+
+
+Outcomes:
+1. Problem solving: accuracy on equivalence problems at pretest, training, and posttest.
+2. Problem encoding: errors when reproducing problems, including whether the blank and equal sign are included.
+3. Strategy ratings: how children rated correct and incorrect strategies.
+4. Mediation: whether encoding and strategy ratings explain the gesture effect on problem solving.
+5. Problem grouping: whether gesture changes which problem features (problem type, matching addends, number of addends, blank location) children use to group problems.
+
+Covariates: `MM` = Speeded math test time; `AveragePretest_EQ` = pretest problem solving.
+
+Data availability: Participant data are not included in this repository.
+
+
+
+
+
+## Setup
+
+```{r load-packages}
+library(tidyverse)
+library(lme4)
+library(emmeans)
+library(ggsignif)
+library(lavaan)
+library(lavaanPlot)
+library(ggh4x)
+```
+
+
+
+
+
+```{r load-data}
+load("PKG_DataPeak_Prospectus_26_07_08.Rdat")
+```
+
+
+```{r load-grouping-data}
+#GroupingData = read.csv('PKG_GroupingDataCoded_125_Pairwise_StructureFixed_9_20_26.csv')
+
+GroupingData = read.csv('PKG_GroupingDataCoded_125_26_9_21_OriginalDesign.csv')
+GroupingData.Participants = unique(GroupingData$ParticipantID)
+```
+
+
+
+```{r check-participant-ids}
+GroupingData.Participants
+PKGData.Participants = unique(PKGData$ParticipantID)
+PKGData.Participants
+
+
+match(GroupingData.Participants,PKGData.Participants)
+```
+
+
+```{r merge-grouping-data}
+TempData <- PKGData %>%
+  mutate(
+    # Standardize capitalization
+    ParticipantID = str_to_upper(ParticipantID),
+
+    # Add missing JAZ suffix
+    ParticipantID = if_else(
+      !str_ends(ParticipantID, "JAZ"),
+      paste0(ParticipantID, "JAZ"),
+      ParticipantID
+    ),
+
+    # Fix IDs that appear to be typos
+    ParticipantID = recode(
+      ParticipantID,
+      "REDACTED" = "REDACTED",
+      "REDACTED" = "REDACTED",
+      "REDACTED" = "REDACTED"
+    )
+  )
+
+GroupingData$ProblemType = "CAT"
+
+matched_GroupingDataSet <- TempData %>%
+  full_join(
+    GroupingData,
+    by = c("ParticipantID","TestTime","ProblemType")
+  )
+
+RemergeValues = TempData %>% 
+  dplyr::select(ParticipantID, Condition, MM, AveragePretest_EQ) %>% 
+  distinct()
+
+GroupingDataset = matched_GroupingDataSet %>%
+  dplyr::select(-c(Condition, MM, AveragePretest_EQ)) %>%
+  full_join(RemergeValues, by = c("ParticipantID"))
+
+GroupingDataset = GroupingDataset %>% 
+  filter(ProblemType == "CAT")
+```
+
+
+
+```{r plot-colors}
+UiowaColors = c('#000000','#FFCD00')
+UiowaColorsTri = c('#000000','#FFCD00', '#BBBCBC')
+#BBBCBC
+```
+
+
+
+
+```{r concurrent-averages}
+ConcurrentAverage.DF = PKGData %>%
+  group_by(ParticipantID, ProblemType, TestTime) %>%
+  summarize(ConcurrentAverage = mean(Score, na.rm = TRUE)) %>%
+  pivot_wider(names_from = ProblemType, names_prefix = "Average", values_from = ConcurrentAverage)
+```
+
+
+
+## Encoding averages
+
+Per-participant encoding scores by problem feature and test time, joined back onto the main dataset.
+
+
+```{r encoding-averages}
+EncodingAverages.DF = PKGData %>%
+  filter(ProblemType == "PR") %>%
+  group_by(ParticipantID, ProblemType, TestTime, ProblemFeatures) %>%
+  summarize(Average = mean(Score, na.rm = TRUE)) %>%
+  pivot_wider(names_from = c(ProblemType, ProblemFeatures, TestTime), names_prefix = "Average", values_from = Average)
+```
+
+```{r join-encoding-averages}
+PKGData = left_join(PKGData, EncodingAverages.DF)
+```
+
+
+
+
+```{r set-reference-condition}
+PKGData$Condition = factor(PKGData$Condition, ordered = FALSE)
+PKGData$Condition = relevel(PKGData$Condition, ref = c("Speech Only"))
+```
+
+
+## Problem solving (equivalence problems)
+
+Mixed-effects logistic regressions on equivalence-problem accuracy at pretest, training, and each half of the posttest, controlling for speeded math test time and pretest problem solving, with random intercepts for participant and problem
+Conditions did not differ at pretest; children in the gesture condition outperformed the speech-only condition at training and posttest. 
+
+```{r eq-pretest-model}
+EQ_Pretest_Model = PKGData %>%
+  #filter(AveragePretest_EQ < 1) %>%
+  filter(ProblemNumber < 5) %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  filter(TestTime == "Pretest") %>%
+  glmer(Score ~ scale(MM) + Condition + (1|ProblemNumber) + (1|ParticipantID),
+       data = .,family = binomial, glmerControl(optimizer="bobyqa", 
+                    optCtrl=list(maxfun=1e5)))
+summary(EQ_Pretest_Model)
+```
+
+
+
+```{r eq-training-model}
+EQ_Training_Model = PKGData %>%
+  #filter(AveragePretest_EQ < 1) %>%
+  filter(ProblemNumber < 5) %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  filter(TestTime == "Training") %>%
+  glmer(Score ~ scale(MM) + AveragePretest_EQ + Condition + (1|ProblemNumber) + (1|ParticipantID),
+       data = .,family = binomial, glmerControl(optimizer="bobyqa", 
+                    optCtrl=list(maxfun=1e5)))
+summary(EQ_Training_Model)
+```
+
+
+
+
+
+```{r eq-posttest-first-half}
+EQ_Posttest_Model.FirstFour = PKGData %>%
+  #filter(AveragePretest_EQ < 1) %>%
+  filter(ProblemNumber < 5) %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  filter(TestTime == "Posttest") %>%
+  glmer(Score ~ scale(MM) + AveragePretest_EQ + Condition + (1|ProblemNumber) + (1|ParticipantID),
+       data = .,family = binomial, glmerControl(optimizer="bobyqa", 
+                    optCtrl=list(maxfun=1e5)))
+summary(EQ_Posttest_Model.FirstFour)
+```
+
+```{r eq-posttest-second-half}
+EQ_Posttest_Model.SecondFour = PKGData %>%
+  #filter(AveragePretest_EQ < 1) %>%
+  filter(ProblemNumber > 4) %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  filter(TestTime == "Posttest") %>%
+  glmer(Score ~ scale(MM) + AveragePretest_EQ + Condition + (1|ProblemNumber) + (1|ParticipantID),
+       data = .,family = binomial, glmerControl(optimizer="bobyqa", 
+                    optCtrl=list(maxfun=1e5)))
+summary(EQ_Posttest_Model.SecondFour)
+```
+
+### Figure: problem solving across test times
+
+```{r eq-figure}
+
+
+
+annotation_df1 <- data.frame(
+  TestTime = c("Training","Posttest_1","Posttest_2"),
+  start = c(1.7, 2.7, 3.7),
+  end = c(2.3,3.3,4.3),
+  y = c(1,1,1),
+  label = c(paste0('p = ', round(coef(summary(EQ_Training_Model))['ConditionSpeech and Gesture', 'Pr(>|z|)'] ,3)), 
+            paste0('p = ', round(coef(summary(EQ_Posttest_Model.FirstFour))['ConditionSpeech and Gesture', 'Pr(>|z|)'] ,3)), 
+            paste0('p = ', round(coef(summary(EQ_Posttest_Model.SecondFour))['ConditionSpeech and Gesture', 'Pr(>|z|)'] ,3))))
+annotation_df1$TestTime = factor(annotation_df1$TestTime, levels = c("Pretest", "Training", "Posttest"))
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(TestTime_2 = case_when(TestTime == "Pretest" ~ TestTime,
+                               TestTime == "Training" ~ TestTime,
+                               TestTime == "Posttest" & ProblemNumber < 5 ~ "Posttest 1",
+                               TestTime == "Posttest" & ProblemNumber > 4 ~ "Posttest 2")) %>%
+  group_by(ParticipantID, Condition, TestTime_2) %>%
+  summarize(AverageScore = mean(Score)) %>%
+  mutate(TestTime_2 = factor(TestTime_2, levels = c('Pretest', 'Training', 'Posttest 1', "Posttest 2"))) %>%
+  ggplot(aes(x=TestTime_2, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    labs(x = "Testing Time", y = "Average Problem Solving",) + #title = "Children Instructed with Gesture Solve More Training and Posttest Problems Correctly") +
+    geom_signif(
+    data = annotation_df1,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE)+
+    theme_bw(base_size = 16) + 
+    coord_cartesian(ylim = c(0,1.05)) + 
+    labs(color = "Instructional Condition") + 
+    scale_color_manual(values = UiowaColorsTri)
+
+```
+
+
+### Figure: problem solving, training and posttest only
+
+```{r eq-figure-no-pretest}
+
+
+
+annotation_df1 <- data.frame(
+  TestTime = c("Training","Posttest_1","Posttest_2"),
+  start = c(.7, 1.7, 2.7),
+  end = c(1.3,2.3,3.3),
+  y = c(1,1,1),
+  label = c(paste0('p = ', round(coef(summary(EQ_Training_Model))['ConditionSpeech and Gesture', 'Pr(>|z|)'] ,3)), 
+            paste0('p = ', round(coef(summary(EQ_Posttest_Model.FirstFour))['ConditionSpeech and Gesture', 'Pr(>|z|)'] ,3)), 
+            paste0('p = ', round(coef(summary(EQ_Posttest_Model.SecondFour))['ConditionSpeech and Gesture', 'Pr(>|z|)'] ,3))))
+annotation_df1$TestTime = factor(annotation_df1$TestTime, levels = c("Pretest", "Training", "Posttest"))
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(TestTime_2 = case_when(TestTime == "Pretest" ~ TestTime,
+                               TestTime == "Training" ~ TestTime,
+                               TestTime == "Posttest" & ProblemNumber < 5 ~ "Posttest 1",
+                               TestTime == "Posttest" & ProblemNumber > 4 ~ "Posttest 2")) %>%
+  filter(TestTime != "Pretest") %>%
+  group_by(ParticipantID, Condition, TestTime_2) %>%
+  summarize(AverageScore = mean(Score)) %>%
+  mutate(TestTime_2 = factor(TestTime_2, levels = c('Pretest', 'Training', 'Posttest 1', "Posttest 2"))) %>%
+  ggplot(aes(x=TestTime_2, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    labs(x = "Testing Time", y = "Average Problem Solving",) + #title = "Children Instructed with Gesture Solve More Training and Posttest Problems Correctly") +
+    geom_signif(
+    data = annotation_df1,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE)+
+    theme_bw(base_size = 16) + 
+    coord_cartesian(ylim = c(0,1.05)) + 
+    labs(color = "Instructional Condition") + 
+    scale_color_manual(values = UiowaColorsTri)
+
+```
+
+
+
+
+
+## Problem encoding
+
+Encoding errors at posttest by problem feature (left vs. right blank), with a condition × feature interaction.
+
+
+
+
+```{r encoding-model}
+PR_Posttest_Model.Int = PKGData %>%
+  #filter(AveragePretest_EQ < 1) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  mutate(MM = as.numeric(MM)) %>%
+  filter(ProblemType == "PR") %>%
+  filter(TestTime == "Posttest") %>%
+  lmer(Score ~ scale(MM) + AveragePretest_PR + ProblemFeatures*Condition + (1|ParticipantID),
+       data = .)
+summary(PR_Posttest_Model.Int)
+```
+
+
+```{r encoding-emmeans}
+emmeans(PR_Posttest_Model.Int, pairwise ~ Condition | ProblemFeatures)
+```
+
+
+
+The same model with the interaction terms written in the other order.
+
+```{r encoding-model-refit}
+PR_Posttest_Model.Int = PKGData %>%
+  #filter(AveragePretest_EQ < 1) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  mutate(MM = as.numeric(MM)) %>%
+  filter(ProblemType == "PR") %>%
+  filter(TestTime == "Posttest") %>%
+  lmer(Score ~ scale(MM) + AveragePretest_PR + Condition*ProblemFeatures + (1|ParticipantID),
+       data = .)
+summary(PR_Posttest_Model.Int)
+```
+```{r encoding-emmeans-refit}
+emmeans(PR_Posttest_Model.Int, pairwise ~ Condition | ProblemFeatures)
+```
+
+
+
+### Figure: encoding errors by test time
+```{r encoding-figure}
+
+
+
+
+annotation_df2 <- data.frame(
+  ProblemFeatures = c("Right Blank"),
+  start = c(1.7),
+  end = c(2.3),
+  y = c(-.5),
+  label = c("p = .047")
+)
+annotation_df2$ProblemFeatures = factor(annotation_df2$ProblemFeatures, levels = c("Left Blank", "Right Blank"))
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "PR") %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  mutate(ProblemFeatures = case_when(ProblemFeatures == "LB" ~ "Left Blank",
+          ProblemFeatures == "RB" ~ "Right Blank"
+  )) %>%
+  mutate(ProblemFeatures = factor(ProblemFeatures, levels = c('Left Blank', "Right Blank"))) %>%
+  summarize(AverageScore = mean(Score)) %>%
+  ggplot(aes(x=TestTime, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    facet_wrap(~ProblemFeatures) + 
+    labs(x = "Testing Time", y = "Average Encoding Errors") +#, title = "Children Instructed with Gesture Make Fewer Encoding Errors on Right Blank Problems") +
+    #scale_alpha_discrete(range = c(.4,1)) +
+    theme_bw(base_size = 16) + 
+    coord_cartesian(ylim = c(0,2)) + 
+    labs(color = "Instruction") +
+    geom_signif(
+    data = annotation_df2,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 5, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) +
+    scale_y_reverse() 
+
+
+
+```
+
+### Figure: encoding errors at posttest
+```{r encoding-figure-posttest}
+
+
+
+
+annotation_df2 <- data.frame(
+  ProblemFeatures = c("Right Blank"),
+  start = c(.8),
+  end = c(2.2),
+  y = c(-.5),
+  label = c("p = .047")
+)
+annotation_df2$ProblemFeatures = factor(annotation_df2$ProblemFeatures, levels = c("Left Blank", "Right Blank"))
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "PR") %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  mutate(ProblemFeatures = case_when(ProblemFeatures == "LB" ~ "Left Blank",
+          ProblemFeatures == "RB" ~ "Right Blank"
+  )) %>%
+  mutate(ProblemFeatures = factor(ProblemFeatures, levels = c('Left Blank', "Right Blank"))) %>%
+  summarize(AverageScore = mean(Score)) %>%
+  filter(TestTime == "Posttest") %>%
+  ggplot(aes(x=Condition, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    facet_wrap(~ProblemFeatures) + 
+    labs(x = "Instructional Condition", y = "Average Encoding Errors") +#, title = "Children Instructed with Gesture Make Fewer Encoding Errors on Right Blank Problems") +
+    #scale_alpha_discrete(range = c(.4,1)) +
+    theme_bw(base_size = 16) + 
+    coord_cartesian(ylim = c(0,2)) + 
+    labs(color = "Instructional Condition") +
+    geom_signif(
+    data = annotation_df2,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 5, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) +
+    scale_y_reverse() + 
+    scale_color_brewer(palette = 'Set1')#+ 
+    #scale_color_manual(values = UiowaColorsTri)
+
+
+
+```
+
+## Blank inclusion
+
+Whether children include the blank when reproducing a problem, at posttest, controlling for pretest blank inclusion.
+```{r blank-model}
+PR_Posttest_Model_Blank.noEQ = PKGData %>%
+  filter(ProblemType == "PR") %>%
+  filter(TestTime == "Posttest") %>%
+  glmer(BlankPR ~ scale(MM) + AveragePretest_EQ + BlankPRAve_Pretest + Condition +  (1|ParticipantID),
+       data = .,
+       family = binomial, glmerControl(optimizer="bobyqa", 
+                    optCtrl=list(maxfun=1e5)))
+summary(PR_Posttest_Model_Blank.noEQ)
+```
+
+
+
+
+
+
+
+
+### Figure: blank inclusion
+
+
+```{r blank-figure}
+
+
+
+
+
+
+annotation_df3 <- data.frame(
+  ProblemFeatures = c("Left Blank"),
+  start = c(1.8),
+  end = c(2.2),
+  y = c(1.02),
+  label = c(paste0('p = ', round(coef(summary(PR_Posttest_Model_Blank.noEQ))['ConditionSpeech and Gesture', 'Pr(>|z|)'] ,3)))
+)
+annotation_df3$ProblemFeatures = factor(annotation_df3$ProblemFeatures, levels = c("Left Blank", "Right Blank"))
+
+
+
+
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "PR") %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  mutate(ProblemFeatures = case_when(ProblemFeatures == "LB" ~ "Left Blank",
+          ProblemFeatures == "RB" ~ "Right Blank"
+  )) %>%
+  mutate(ProblemFeatures = factor(ProblemFeatures, levels = c('Left Blank', "Right Blank"))) %>%
+  summarize(AverageScore = mean(BlankPR)) %>%
+  ggplot(aes(x=TestTime, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    labs(x = "Testing Time", y = "Average Blank Inclusion Rate") +#, title = "Blank Inclusion Rate increases after Instruction with Gesture") +
+    #scale_alpha_discrete(range = c(.4,1)) +
+    theme_bw(base_size = 16) + 
+    coord_cartesian(ylim = c(0,1.1)) + 
+    #theme(legend.position = 'bottom')+ 
+    labs(color = "Instruction") + 
+    geom_signif(
+    data = annotation_df3,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) + 
+    scale_color_manual(values = UiowaColorsTri)
+
+```
+
+
+## Equal sign inclusion
+
+Whether children include the equal sign when reproducing a problem.
+### Figure: equal sign inclusion
+
+```{r equal-sign-figure}
+
+
+
+
+
+annotation_df4 <- data.frame(
+  ProblemFeatures = c("Left Blank"),
+  start = c(.8),
+  end = c(2.2),
+  y = c(1.02),
+  label = c("p = .005")
+)
+annotation_df3$ProblemFeatures = factor(annotation_df3$ProblemFeatures, levels = c("Left Blank", "Right Blank"))
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "PR") %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  mutate(ProblemFeatures = case_when(ProblemFeatures == "LB" ~ "Left Blank",
+          ProblemFeatures == "RB" ~ "Right Blank"
+  )) %>%
+  mutate(ProblemFeatures = factor(ProblemFeatures, levels = c('Left Blank', "Right Blank"))) %>%
+  summarize(AverageScore = mean(EqualSignPR)) %>%
+  ggplot(aes(x=TestTime, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    labs(x = "Testing Time", y = "Average Equalsign Inclusion Rate") +#, title = "Equal Sign Inclusion Rate is not Influenced by Instruction") +
+    coord_cartesian(ylim = c(0,1.1)) + 
+    theme_bw(base_size = 16) + 
+    #theme(legend.position = 'bottom')+ 
+    labs(color = "Instruction") + 
+    scale_color_manual(values = UiowaColorsTri)
+
+```
+
+
+
+### Models
+
+```{r equal-sign-model}
+PR_Posttest_Model_Equal.noEQ = PKGData %>%
+  filter(ProblemType == "PR") %>%
+  filter(TestTime == "Posttest") %>%
+  glmer(EqualSignPR ~ scale(MM) + EqualSignPRAve_Pretest + AveragePretest_EQ + Condition + (1|ParticipantID),
+       data = .,
+       family = binomial, glmerControl(optimizer="bobyqa", 
+                    optCtrl=list(maxfun=1e5)))
+summary(PR_Posttest_Model_Equal.noEQ)
+```
+
+
+Adding posttest problem solving as a covariate.
+
+```{r equal-sign-model-posttest-eq}
+PR_Posttest_Model_Equal.EQ = PKGData %>%
+  filter(ProblemType == "PR") %>%
+  filter(TestTime == "Posttest") %>%
+  glmer(EqualSignPR ~ scale(MM) + EqualSignPRAve_Pretest + AveragePretest_EQ + AveragePosttest_EQ + Condition + (1|ParticipantID),
+       data = .,
+       family = binomial, glmerControl(optimizer="bobyqa", 
+                    optCtrl=list(maxfun=1e5)))
+summary(PR_Posttest_Model_Equal.EQ)
+```
+
+
+
+
+## Strategy ratings (vignettes)
+
+Children rated four strategies (Add All, Add to Equal, Equivalence, Grouping) on a 1–3 scale with 1 being very smart and 3 being not-so-smart. Graph scales are reversed to make the graph easier to understand with higher values on the chart indicating higher evaluation. Linear models test condition differences at posttest, controlling for pretest ratings. 
+
+
+
+
+```{r vignette-eq-model}
+VignetteEQ.noEQ = PKGData %>%
+  filter(ProblemType == "VI" & ProblemFeatures == "EQ") %>%
+  filter(TestTime == "Posttest") %>%
+  lm(Score ~ scale(MM) + AveragePretest_EQ + Pretest_VI_EQ + Condition,
+     data=.)
+  summary(VignetteEQ.noEQ)
+```
+
+
+
+```{r vignette-ae-model}
+VignetteAE.noEQ = PKGData %>%
+  filter(ProblemType == "VI" & ProblemFeatures == "AE") %>%
+  filter(TestTime == "Posttest") %>%
+  lm(Score ~ scale(MM) + Pretest_VI_AE + AveragePretest_EQ + Condition,
+     data=.)
+  summary(VignetteAE.noEQ)
+```
+
+
+
+
+```{r vignette-aa-model}
+VignetteAA.noEQ = PKGData %>%
+  filter(ProblemType == "VI" & ProblemFeatures == "AA") %>%
+  filter(TestTime == "Posttest") %>%
+  lm(Score ~ scale(MM) + AveragePretest_EQ + Pretest_VI_AA + Condition,
+     data=.)
+  summary(VignetteAA.noEQ)
+```
+
+
+
+```{r vignette-gr-model}
+VignetteGR.noEQ = PKGData %>%
+  filter(ProblemType == "VI" & ProblemFeatures == "GR") %>%
+  filter(TestTime == "Posttest") %>%
+  lm(Score ~ scale(MM) + AveragePretest_EQ + Pretest_VI_GR + Condition,
+     data=.)
+  summary(VignetteGR.noEQ)
+```
+
+
+
+### Figure: strategy ratings by test time
+
+
+```{r vignette-figure}
+
+
+
+annotation_df5 <- data.frame(
+  ProblemFeatures = c("Add to Equal", "Equivalence"),
+  start = c(1.7, 1.7),
+  end = c(2.3, 2.3),
+  y = c(-1.3, -1.65),
+  label = c(paste0('p < .001'),# ', round(coef(summary(VignetteAE.noEQ))['ConditionSpeech and Gesture', 'Pr(>|t|)'] ,3)),
+            paste0('p = ', round(coef(summary(VignetteEQ.noEQ))['ConditionSpeech and Gesture', 'Pr(>|t|)'] ,3))
+))
+annotation_df5$ProblemFeatures = factor(annotation_df5$ProblemFeatures, levels = c("Add All", "Add to Equal", "Equivalence","Grouping"))
+
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "VI") %>%
+  filter(TestTime != "Training") %>%
+  mutate(ProblemFeatures= case_when(ProblemFeatures == "AA" ~ "Add All",
+                                      ProblemFeatures == "AE" ~ "Add to Equal",
+                                      ProblemFeatures == "EQ" ~ "Equivalence",
+                                      ProblemFeatures == "GR" ~ "Grouping")) %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  summarize(AverageScore = mean(Score)) %>%
+  ggplot(aes(x=TestTime, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    facet_wrap(~ProblemFeatures, nrow = 1) + 
+    labs(x = "Testing Time", y = "Strategy Rating (1-3)") +#, title = "Children Instructed with Gesture rate the Add to Equal Strategy Lower") + 
+    theme_bw(base_size = 16) + 
+    #theme(legend.position = 'bottom') +
+    coord_cartesian(ylim = c(1,3)) + 
+    scale_y_reverse() + 
+    labs(color = "Instruction") + 
+    geom_signif(
+    data = annotation_df5,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) + 
+    scale_color_brewer(palette = 'Set1')#+
+    #scale_color_manual(values=UiowaColors)
+
+
+```
+
+### Figure: strategy ratings at posttest (SRCD version)
+
+
+```{r vignette-figure-posttest}
+
+
+
+annotation_df5 <- data.frame(
+  ProblemFeatures = c("Add to Equal", "Equivalence"),
+  start = c(.8, .8),
+  end = c(2.2, 2.2),
+  y = c(-1.3, -1.65),
+  label = c(paste0('p < .001'),# ', round(coef(summary(VignetteAE.noEQ))['ConditionSpeech and Gesture', 'Pr(>|t|)'] ,3)),
+            paste0('p = ', round(coef(summary(VignetteEQ.noEQ))['ConditionSpeech and Gesture', 'Pr(>|t|)'] ,3))
+))
+annotation_df5$ProblemFeatures = factor(annotation_df5$ProblemFeatures, levels = c("Add All", "Add to Equal", "Equivalence","Grouping"))
+
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "VI") %>%
+  filter(TestTime == "Posttest") %>%
+  mutate(ProblemFeatures= case_when(ProblemFeatures == "AA" ~ "Add All",
+                                      ProblemFeatures == "AE" ~ "Add to Equal",
+                                      ProblemFeatures == "EQ" ~ "Equivalence",
+                                      ProblemFeatures == "GR" ~ "Grouping")) %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  summarize(AverageScore = mean(Score)) %>%
+  ggplot(aes(x=Condition, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    facet_wrap(~ProblemFeatures, nrow = 1) + 
+    labs(x = "Instructional Condition", y = "Strategy Rating (1-3)") +#, title = "Children Instructed with Gesture rate the Add to Equal Strategy Lower") + 
+    theme_bw(base_size = 16) + 
+    #theme(legend.position = 'bottom') +
+    coord_cartesian(ylim = c(1,3)) + 
+    scale_y_reverse() + 
+    labs(color = "Instructional Condition") + 
+    geom_signif(
+    data = annotation_df5,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) + 
+    scale_color_brewer(palette = 'Set1')#+
+    #scale_color_manual(values=UiowaColors)
+
+
+```
+
+
+The same figure grouped by whether each strategy is correct or incorrect.
+
+```{r vignette-figure-nested}
+
+annotation_df5 <- data.frame(
+  ProblemFeatures = c("Add to Equal", "Equivalence"),
+  start = c(.8, .8),
+  end = c(2.2, 2.2),
+  y = c(-1.3, -1.65),
+  label = c(
+    "p < .001",
+    paste0(
+      "p = ",
+      round(
+        coef(summary(VignetteEQ.noEQ))[
+          "ConditionSpeech and Gesture",
+          "Pr(>|t|)"
+        ],
+        3
+      )
+    )
+  )
+)
+
+annotation_df5$ProblemFeatures <- factor(
+  annotation_df5$ProblemFeatures,
+  levels = c("Add All", "Add to Equal", "Equivalence", "Grouping")
+)
+
+annotation_df5$Accuracy <- factor(
+  c("Incorrect", "Correct"),
+  levels = c("Incorrect", "Correct")
+)
+
+PKGData %>%
+  filter(
+    ProblemType == "VI",
+    TestTime == "Posttest"
+  ) %>%
+  mutate(
+    ProblemFeatures = case_when(
+      ProblemFeatures == "AA" ~ "Add All",
+      ProblemFeatures == "AE" ~ "Add to Equal",
+      ProblemFeatures == "EQ" ~ "Equivalence",
+      ProblemFeatures == "GR" ~ "Grouping"
+    ),
+    ProblemFeatures = factor(
+      ProblemFeatures,
+      levels = c(
+        "Add All",
+        "Add to Equal",
+        "Equivalence",
+        "Grouping"
+      )
+    ),
+    Accuracy = case_when(
+      ProblemFeatures %in% c("Add All", "Add to Equal") ~ "Incorrect",
+      ProblemFeatures %in% c("Equivalence", "Grouping") ~ "Correct"
+    ),
+    Accuracy = factor(
+      Accuracy,
+      levels = c("Incorrect", "Correct")
+    )
+  ) %>%
+  group_by(
+    ParticipantID,
+    Condition,
+    TestTime,
+    ProblemFeatures,
+    Accuracy
+  ) %>%
+  summarize(
+    AverageScore = mean(Score),
+    .groups = "drop"
+  ) %>%
+  ggplot(
+    aes(
+      x = Condition,
+      y = AverageScore,
+      color = Condition
+    )
+  ) +
+  stat_summary(
+    geom = "pointrange",
+    position = position_dodge(.5)
+  ) +
+  facet_nested(
+    ~ Accuracy + ProblemFeatures,
+    scales = "free_x",
+    space = "free_x"
+  ) +
+  labs(
+    x = "Instructional Condition",
+    y = "Strategy Rating (1-3)",
+    color = "Instructional Condition"
+  ) +
+  theme_bw(base_size = 16) +
+  coord_cartesian(ylim = c(1, 3)) +
+  scale_y_reverse() +
+  geom_signif(
+    data = annotation_df5,
+    aes(
+      xmin = start,
+      xmax = end,
+      annotations = label,
+      y_position = y
+    ),
+    textsize = 4,
+    vjust = -0.2,
+    manual = TRUE,
+    inherit.aes = FALSE
+  ) +
+  scale_color_brewer(palette = "Set1")
+```
+
+
+
+
+### Figures split by strategy type
+
+#### Incorrect strategies (Add All, Add to Equal)
+
+
+```{r vignette-incorrect-figure}
+
+
+
+annotation_df5 <- data.frame(
+  ProblemFeatures = c("Add to Equal"),
+  start = c(1.7),
+  end = c(2.3),
+  y = c(-1.3),
+  label = c(paste0('p < .001')
+))
+annotation_df5$ProblemFeatures = factor(annotation_df5$ProblemFeatures, levels = c("Add All", "Add to Equal", "Equivalence","Grouping"))
+
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "VI") %>%
+  filter(TestTime != "Training") %>%
+  mutate(ProblemFeatures= case_when(ProblemFeatures == "AA" ~ "Add All",
+                                      ProblemFeatures == "AE" ~ "Add to Equal",
+                                      ProblemFeatures == "EQ" ~ "Equivalence",
+                                      ProblemFeatures == "GR" ~ "Grouping")) %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  filter(ProblemFeatures == "Add All" | ProblemFeatures == "Add to Equal") %>%
+  summarize(AverageScore = mean(Score)) %>%
+  ggplot(aes(x=TestTime, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    facet_wrap(~ProblemFeatures, nrow = 1) + 
+    labs(x = "Testing Time", y = "Strategy Rating (1-3)") +#, title = "Children Instructed with Gesture rate the Add to Equal Strategy Lower") + 
+    theme_bw(base_size = 16) + 
+    #theme(legend.position = 'bottom') +
+    coord_cartesian(ylim = c(1,3)) + 
+    scale_y_reverse() + 
+    labs(color = "Instructional Condition") + 
+    geom_signif(
+    data = annotation_df5,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) +
+    scale_color_manual(values=UiowaColors)
+
+
+```
+
+#### Incorrect strategies, posttest only
+
+
+```{r vignette-incorrect-figure-posttest}
+
+
+
+annotation_df5 <- data.frame(
+  ProblemFeatures = c("Add to Equal"),
+  start = c(.8),
+  end = c(2.2),
+  y = c(-1.3),
+  label = c(paste0('p < .001')
+))
+annotation_df5$ProblemFeatures = factor(annotation_df5$ProblemFeatures, levels = c("Add All", "Add to Equal", "Equivalence","Grouping"))
+
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "VI") %>%
+  filter(TestTime == "Posttest") %>%
+  mutate(ProblemFeatures= case_when(ProblemFeatures == "AA" ~ "Add All",
+                                      ProblemFeatures == "AE" ~ "Add to Equal",
+                                      ProblemFeatures == "EQ" ~ "Equivalence",
+                                      ProblemFeatures == "GR" ~ "Grouping")) %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  filter(ProblemFeatures == "Add All" | ProblemFeatures == "Add to Equal") %>%
+  summarize(AverageScore = mean(Score)) %>%
+  ggplot(aes(x=Condition, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    facet_wrap(~ProblemFeatures, nrow = 1) + 
+    labs(x = "Instructional Condition", y = "Strategy Rating (1-3)") +#, title = "Children Instructed with Gesture rate the Add to Equal Strategy Lower") + 
+    theme_bw(base_size = 16) + 
+    #theme(legend.position = 'bottom') +
+    coord_cartesian(ylim = c(1,3)) + 
+    scale_y_reverse() + 
+    labs(color = "Instructional Condition") + 
+    geom_signif(
+    data = annotation_df5,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) +
+    scale_color_manual(values=UiowaColors)
+
+
+```
+
+
+#### Correct strategies (Equivalence, Grouping)
+
+
+```{r vignette-correct-figure}
+
+
+
+annotation_df5 <- data.frame(
+  ProblemFeatures = c("Equivalence"),
+  start = c(1.7),
+  end = c(2.3),
+  y = c(-1.65),
+  label = c(paste0('p = ', round(coef(summary(VignetteEQ.noEQ))['ConditionSpeech and Gesture', 'Pr(>|t|)'] ,3))
+))
+annotation_df5$ProblemFeatures = factor(annotation_df5$ProblemFeatures, levels = c("Add All", "Add to Equal", "Equivalence","Grouping"))
+
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "VI") %>%
+  filter(TestTime != "Training") %>%
+  mutate(ProblemFeatures= case_when(ProblemFeatures == "AA" ~ "Add All",
+                                      ProblemFeatures == "AE" ~ "Add to Equal",
+                                      ProblemFeatures == "EQ" ~ "Equivalence",
+                                      ProblemFeatures == "GR" ~ "Grouping")) %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  filter(ProblemFeatures == "Equivalence" | ProblemFeatures == "Grouping") %>%
+  summarize(AverageScore = mean(Score)) %>%
+  ggplot(aes(x=TestTime, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    facet_wrap(~ProblemFeatures, nrow = 1) + 
+    labs(x = "Testing Time", y = "Strategy Rating (1-3)") +#, title = "Children Instructed with Gesture rate the Add to Equal Strategy Lower") + 
+    theme_bw(base_size = 16) + 
+    #theme(legend.position = 'bottom') +
+    coord_cartesian(ylim = c(1,3)) + 
+    scale_y_reverse() + 
+    labs(color = "Instructional Condition") + 
+    geom_signif(
+    data = annotation_df5,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) +
+    scale_color_manual(values=UiowaColors)
+
+
+```
+
+
+#### Correct strategies, posttest only
+
+
+```{r vignette-correct-figure-posttest}
+
+
+
+annotation_df5 <- data.frame(
+  ProblemFeatures = c("Equivalence"),
+  start = c(.8),
+  end = c(2.2),
+  y = c(-1.65),
+  label = c(paste0('p = ', round(coef(summary(VignetteEQ.noEQ))['ConditionSpeech and Gesture', 'Pr(>|t|)'] ,3))
+))
+annotation_df5$ProblemFeatures = factor(annotation_df5$ProblemFeatures, levels = c("Add All", "Add to Equal", "Equivalence","Grouping"))
+
+
+
+
+
+
+
+
+
+PKGData %>%
+  filter(ProblemType == "VI") %>%
+  filter(TestTime == "Posttest") %>%
+  mutate(ProblemFeatures= case_when(ProblemFeatures == "AA" ~ "Add All",
+                                      ProblemFeatures == "AE" ~ "Add to Equal",
+                                      ProblemFeatures == "EQ" ~ "Equivalence",
+                                      ProblemFeatures == "GR" ~ "Grouping")) %>%
+  group_by(ParticipantID, Condition, TestTime, ProblemFeatures) %>%
+  filter(ProblemFeatures == "Equivalence" | ProblemFeatures == "Grouping") %>%
+  summarize(AverageScore = mean(Score)) %>%
+  ggplot(aes(x=Condition, y=AverageScore, color = Condition)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    facet_wrap(~ProblemFeatures, nrow = 1) + 
+    labs(x = "Instructional Condition", y = "Strategy Rating (1-3)") +#, title = "Children Instructed with Gesture rate the Add to Equal Strategy Lower") + 
+    theme_bw(base_size = 16) + 
+    #theme(legend.position = 'bottom') +
+    coord_cartesian(ylim = c(1,3)) + 
+    scale_y_reverse() + 
+    labs(color = "Instructional Condition") + 
+    geom_signif(
+    data = annotation_df5,
+    aes(xmin = start, xmax = end, annotations = label, y_position = y),
+    textsize = 4, vjust = -0.2,
+    manual = TRUE, inherit.aes = FALSE) +
+    scale_color_manual(values=UiowaColors)
+
+
+```
+
+
+
+### Pretest ratings by children's own pretest strategy
+
+```{r pretest-strategy-figure}
+PKGData %>%
+  filter(ProblemType == 'VI' & TestTime == 'Pretest') %>%
+  group_by(ParticipantID, ProblemNumber, Strategy_Pretest, ProblemFeatures, Score) %>%
+  mutate(Strategy_Pretest = case_when(Strategy_Pretest == "AA" ~ "Child Used AA on Pretest",
+                                     Strategy_Pretest == "AB" ~ "Child Used AB on Pretest",
+                                      Strategy_Pretest == "AE" ~ "Child Used AE on Pretest",
+                                      Strategy_Pretest == "Correct" ~ "Child Solved Pretest Correctly")) %>%
+    mutate(Strategy_Pretest = factor(Strategy_Pretest, levels = c("Child Used AA on Pretest", "Child Used AE on Pretest", "Child Used AB on Pretest", "Child Solved Pretest Correctly"))) %>%
+  ggplot(aes(x=ProblemFeatures, y=Score, color=ProblemFeatures)) +
+    stat_summary(geom="pointrange", position=position_dodge(.5)) +
+    labs(x = "Pretest Vignette Strategy Type", y = "Pretest Vignette Strategy Rating", title = "At Pretest, Children Rate Strategies More Highly When They Align with Their Problem-Solving Strategy") +
+    theme_bw(base_size = 16) + 
+    scale_color_brewer(palette = 'Set1', labels = c('Add All (AA)', "Add to Equal (AE)", "Equivalence (EQ)", "Grouping (GR)")) + 
+    labs(color = "Vignette Strategy") + 
+    scale_y_reverse() + 
+    facet_wrap(~Strategy_Pretest, nrow = 1)+ 
+    coord_cartesian(ylim = c(1,3)) 
+
+    
+```
+
+
+Do children rate a strategy higher when it matches the strategy they used on the pretest?
+
+```{r pretest-strategy-match-model}
+PKGData %>%
+  filter(ProblemType == "VI", TestTime == "Pretest") %>%
+  mutate(StrategyMatch = case_when(Strategy_Pretest == ProblemFeatures ~ 1,
+                                   Strategy_Pretest == "Correct" & ProblemFeatures == "GR" ~ 1,
+                                   Strategy_Pretest == "Correct" & ProblemFeatures == "EQ" ~ 1,
+                                   Strategy_Pretest == "AB" & ProblemFeatures == "AA" ~ 1,
+                                   .default = 0
+  )) %>%
+  mutate(StrategyMatch = as.factor(StrategyMatch)) %>%
+  lm(Score ~ scale(MM) + StrategyMatch,
+     data=.) %>% 
+  summary()
+```
+
+## Pretest encoding and posttest problem solving
+
+Tests whether the relation between pretest encoding errors and posttest problem solving differs by condition.
+
+
+
+
+```{r eq-by-pretest-encoding-model}
+EQ_Posttest_Model.PR = PKGData %>%
+  #filter(AveragePretest_EQ < 1) %>%
+  filter(ProblemType == "EQ") %>%
+  filter(TestTime == "Posttest") %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  glmer(Score ~ scale(MM) + AveragePretest_EQ + Condition*AveragePretest_PR + (1|ProblemNumber) + (1|ParticipantID),
+       data = .,family = binomial, glmerControl(optimizer="bobyqa", 
+                    optCtrl=list(maxfun=1e5)))
+summary(EQ_Posttest_Model.PR)
+```
+
+```{r eq-by-pretest-encoding-trends}
+emtrends(EQ_Posttest_Model.PR, var = "AveragePretest_PR", pairwise ~ Condition)
+```
+
+
+### Figures
+
+```{r eq-by-pretest-encoding-figure}
+PKGData %>%
+  filter(ProblemType == "EQ" & TestTime == "Posttest") %>%
+  group_by(ParticipantID, Condition, AveragePretest_PR) %>%
+  summarize('AverageScore' = mean(Score)) %>%
+  ggplot(aes(x=AveragePretest_PR, y=AverageScore)) +
+  geom_jitter(aes(color = Condition), width = .03, height = .03, alpha = .5) +
+  geom_smooth(method = "lm", aes(color = Condition), se = FALSE)+
+  scale_color_brewer(palette = "Set1") +
+#theme(legend.position = "Right") +
+  labs(x = "Pretest Problem Encoding Errors", y = "Posttest Problem Solving")+ 
+  theme(text = element_text(size = 14)) +
+  #ggtitle("Pretest Problem Encoding by Posttest Problem Solving")
+   scale_color_manual(values = UiowaColorsTri)
+```
+
+
+
+```{r eq-by-pretest-encoding-figure-by-feature}
+PKGData %>%
+  filter(ProblemType == "EQ" & TestTime == "Posttest") %>%
+  group_by(ParticipantID, Condition, AveragePretest_PR, ProblemFeatures) %>%
+  summarize('AverageScore' = mean(Score)) %>%
+  ggplot(aes(x=AveragePretest_PR, y=AverageScore)) +
+  geom_jitter(aes(color = Condition), width = .03, height = .03, alpha = .5) +
+  geom_smooth(method = "lm", aes(color = Condition), se = FALSE)+
+  scale_color_brewer(palette = "Set1") +
+#theme(legend.position = "Right") +
+  labs(x = "Pretest Problem Encoding Errors", y = "Posttest Problem Solving")+ 
+  theme(text = element_text(size = 14)) +
+  ggtitle("Pretest Problem Encoding by Posttest Problem Solving") + 
+  facet_wrap(~ProblemFeatures)
+```
+
+
+Excluding children at ceiling on the pretest.
+
+```{r eq-by-pretest-encoding-figure-nonceiling}
+PKGData %>%
+  filter(ProblemType == "EQ" & TestTime == "Posttest") %>%
+  filter(AveragePretest_EQ < 1) %>%
+  group_by(ParticipantID, Condition, AveragePretest_PR, ProblemFeatures) %>%
+  summarize('AverageScore' = mean(Score)) %>%
+  ggplot(aes(x=AveragePretest_PR, y=AverageScore)) +
+  geom_jitter(aes(color = Condition), width = .03, height = .03, alpha = .5) +
+  geom_smooth(method = "lm", aes(color = Condition), se = FALSE)+
+  scale_color_brewer(palette = "Set1") +
+#theme(legend.position = "Right") +
+  labs(x = "Pretest Problem Encoding Errors", y = "Posttest Problem Solving")+ 
+  theme(text = element_text(size = 14)) +
+  ggtitle("Pretest Problem Encoding by Posttest Problem Solving") + 
+  facet_wrap(~ProblemFeatures)
+```
+*The mediation models below use 5,000 bootstrap samples and take a long time to run.*
+
+
+## Mediation models
+
+Path models (`lavaan`) testing whether condition affects posttest problem solving through each proposed mediator, controlling for pretest problem solving, `MM`, and the mediator's pretest value. Confidence intervals come from 5,000 bootstrap samples.
+
+### Mediator: encoding (right-blank problems)
+
+```{r med-encoding}
+parallel_model_cov <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  AveragePR_RB_Posttest ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*AveragePR_RB_Pretest
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*AveragePR_RB_Posttest + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*AveragePR_RB_Pretest
+
+  # 4. Calculate Indirect and Total Effects (Formula stays the same)
+  indirect    := a1 * b1
+  direct := cp
+  total_effect   := cp + (a1 * b1)
+'
+
+
+
+
+fit = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(parallel_model_cov, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(fit, ci = TRUE)
+```
+
+
+
+### Mediator: blank inclusion
+
+
+```{r med-blank}
+PRBlank_Mediation_Model <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  BlankPRAve_Posttest ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*BlankPRAve_Pretest
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*BlankPRAve_Posttest + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*BlankPRAve_Pretest
+
+  # 4. Calculate Indirect and Total Effects (Formula stays the same)
+  indirect    := a1 * b1
+  direct := cp
+  total_effect   := cp + (a1 * b1)
+'
+
+
+
+
+fit.PRBlank_Mediation_Model = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(PRBlank_Mediation_Model, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(fit.PRBlank_Mediation_Model, ci = TRUE)
+```
+
+
+### Parallel mediators: blank inclusion + encoding
+
+```{r med-blank-encoding}
+PR_Parallel_Mediation_Model <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  BlankPRAve_Posttest ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*BlankPRAve_Pretest
+  AveragePR_RB_Posttest ~ a2*Condition + cov_m2a*AveragePretest_EQ + cov_m2b*MM + cov_m2c*AveragePR_RB_Pretest
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*BlankPRAve_Posttest + b2*AveragePR_RB_Posttest + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*BlankPRAve_Pretest + cov_yd*AveragePR_RB_Pretest
+
+  # 3. Allow residual variances of the parallel mediators to correlate
+  BlankPRAve_Posttest ~~ AveragePR_RB_Posttest
+
+  # 4. Calculate Indirect, Total, and Contrast Effects
+  ind_med1     := a1 * b1               # Indirect effect through BlankPRAve_Posttest
+  ind_med2     := a2 * b2               # Indirect effect through AveragePR_RB_Posttest
+  total_ind    := (a1 * b1) + (a2 * b2) # Sum of both indirect paths
+  
+  direct       := cp                    # Direct effect of Condition
+  total_effect := cp + total_ind        # Total effect of Condition
+  
+  # Difference between the two indirect paths to see which is stronger
+  contrast     := (a1 * b1) - (a2 * b2) '
+
+
+
+fit.PR_Parallel_Mediation_Model = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(PR_Parallel_Mediation_Model, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(fit.PR_Parallel_Mediation_Model, ci = TRUE)
+```
+### Mediator: Equivalence strategy rating
+
+```{r med-vi-eq}
+VIEQ_Mediation_Model <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  Posttest_VI_EQ ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*Pretest_VI_EQ
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*Posttest_VI_EQ + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*Pretest_VI_EQ
+
+  # 4. Calculate Indirect and Total Effects (Formula stays the same)
+  indirect    := a1 * b1
+  direct := cp
+  total_effect   := cp + (a1 * b1)
+'
+
+
+
+
+fit.VIEQ = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(VIEQ_Mediation_Model, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(fit.VIEQ, ci = TRUE)
+```
+
+### Mediator: Add to Equal strategy rating
+
+```{r med-vi-ae}
+VIAE_Mediation_Model <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  Posttest_VI_AE ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*Pretest_VI_AE
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*Posttest_VI_AE + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*Pretest_VI_AE
+
+  # 4. Calculate Indirect and Total Effects (Formula stays the same)
+  indirect    := a1 * b1
+  direct := cp
+  total_effect   := cp + (a1 * b1)
+'
+
+
+
+
+fit.VIAE = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(VIAE_Mediation_Model, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(fit.VIAE, ci = TRUE)
+```
+
+
+
+
+### Parallel mediators: Equivalence rating + encoding
+
+```{r med-vi-eq-encoding}
+VIEQ_Parallel_Mediation_Model <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  Posttest_VI_EQ ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*Pretest_VI_EQ
+  AveragePR_RB_Posttest ~ a2*Condition + cov_m2a*AveragePretest_EQ + cov_m2b*MM + cov_m2c*AveragePR_RB_Pretest
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*Posttest_VI_EQ + b2*AveragePR_RB_Posttest + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*Pretest_VI_EQ + cov_yd*AveragePR_RB_Pretest
+
+  # 3. Allow residual variances of the parallel mediators to correlate
+  Posttest_VI_EQ ~~ AveragePR_RB_Posttest
+
+  # 4. Calculate Indirect, Total, and Contrast Effects
+  ind_med1     := a1 * b1               # Indirect effect through Posttest_VI_EQ
+  ind_med2     := a2 * b2               # Indirect effect through AveragePR_RB_Posttest
+  total_ind    := (a1 * b1) + (a2 * b2) # Sum of both indirect paths
+  
+  direct       := cp                    # Direct effect of Condition
+  total_effect := cp + total_ind        # Total effect of Condition
+  
+  # Difference between the two indirect paths to see which is stronger
+  contrast     := (a1 * b1) - (a2 * b2) '
+
+
+
+VIEQ_Parallel_Mediation_Model = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(VIEQ_Parallel_Mediation_Model, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(VIEQ_Parallel_Mediation_Model, ci = TRUE)
+```
+### Serial mediation: Equivalence rating → encoding
+
+```{r med-serial-vi-eq-first}
+VIEQ_Serial_Mediation_Model <- '
+  # 1. Mediator 1 regression (X -> M1 + Covariates)
+  Posttest_VI_EQ ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*Pretest_VI_EQ
+  
+  # 2. Mediator 2 regression (X -> M2 and M1 -> M2 + Covariates)
+  # NOTE: d21 represents the serial path from Mediator 1 to Mediator 2
+  AveragePR_RB_Posttest ~ a2*Condition + d21*Posttest_VI_EQ + cov_m2a*AveragePretest_EQ + cov_m2b*MM + cov_m2c*AveragePR_RB_Pretest
+
+  # 3. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*Posttest_VI_EQ + b2*AveragePR_RB_Posttest + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*Pretest_VI_EQ + cov_yd*AveragePR_RB_Pretest
+
+  # 4. Calculate Indirect, Total, and Specific Effects
+  ind_med1     := a1 * b1                     # Indirect effect 1: Condition -> M1 -> Score
+  ind_med2     := a2 * b2                     # Indirect effect 2: Condition -> M2 -> Score
+  ind_serial   := a1 * d21 * b2               # Serial indirect effect: Condition -> M1 -> M2 -> Score
+  
+  total_ind    := (a1 * b1) + (a2 * b2) + (a1 * d21 * b2) # Sum of all indirect paths
+  
+  direct       := cp                          # Direct effect of Condition
+  total_effect := cp + total_ind              # Total effect of Condition
+'
+
+VIEQ_Serial_Mediation_Fit = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(VIEQ_Serial_Mediation_Model, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(VIEQ_Serial_Mediation_Fit, ci = TRUE)
+```
+
+### Serial mediation: encoding → Equivalence rating
+
+```{r med-serial-encoding-first}
+VIEQ_Serial_Mediation_Model_Reversed <- '
+  # 1. Mediator 1 regression (X -> M1 + Covariates)
+  # M1 is now AveragePR_RB_Posttest
+  AveragePR_RB_Posttest ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*AveragePR_RB_Pretest
+  
+  # 2. Mediator 2 regression (X -> M2 and M1 -> M2 + Covariates)
+  # M2 is now Posttest_VI_EQ. d21 represents the serial path from M1 to M2.
+  Posttest_VI_EQ ~ a2*Condition + d21*AveragePR_RB_Posttest + cov_m2a*AveragePretest_EQ + cov_m2b*MM + cov_m2c*Pretest_VI_EQ
+
+  # 3. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*AveragePR_RB_Posttest + b2*Posttest_VI_EQ + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*AveragePR_RB_Pretest + cov_yd*Pretest_VI_EQ
+
+  # 4. Calculate Indirect, Total, and Specific Effects
+  ind_med1     := a1 * b1                     # Indirect effect 1: Condition -> M1 (PR_RB) -> Score
+  ind_med2     := a2 * b2                     # Indirect effect 2: Condition -> M2 (VI_EQ) -> Score
+  ind_serial   := a1 * d21 * b2               # Serial indirect effect: Condition -> M1 -> M2 -> Score
+  
+  total_ind    := (a1 * b1) + (a2 * b2) + (a1 * d21 * b2) # Sum of all indirect paths
+  
+  direct       := cp                          # Direct effect of Condition
+  total_effect := cp + total_ind              # Total effect of Condition
+'
+
+VIEQ_Serial_Mediation_Fit_Reversed = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(VIEQ_Serial_Mediation_Model_Reversed, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(VIEQ_Serial_Mediation_Fit_Reversed, ci = TRUE)
+```
+
+
+### Three parallel mediators: Equivalence rating, encoding, Add to Equal rating
+```{r med-3-vi-eq-encoding-vi-ae}
+Mediators3_Parallel_Mediation_Model <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  Posttest_VI_EQ        ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*Pretest_VI_EQ
+  AveragePR_RB_Posttest ~ a2*Condition + cov_m2a*AveragePretest_EQ + cov_m2b*MM + cov_m2c*AveragePR_RB_Pretest
+  Posttest_VI_AE        ~ a3*Condition + cov_m3a*AveragePretest_EQ + cov_m3b*MM + cov_m3c*Pretest_VI_AE
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*Posttest_VI_EQ + b2*AveragePR_RB_Posttest + b3*Posttest_VI_AE + 
+          cp*Condition + 
+          cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*Pretest_VI_EQ + cov_yd*AveragePR_RB_Pretest + cov_ye*Pretest_VI_AE
+
+  # 3. Allow residual variances of all parallel mediators to cross-correlate
+  Posttest_VI_EQ        ~~ AveragePR_RB_Posttest
+  Posttest_VI_EQ        ~~ Posttest_VI_AE
+  AveragePR_RB_Posttest ~~ Posttest_VI_AE
+
+  # 4. Calculate Indirect, Total, and Contrast Effects
+  ind_med1     := a1 * b1               # Indirect effect through Posttest_VI_EQ
+  ind_med2     := a2 * b2               # Indirect effect through AveragePR_RB_Posttest
+  ind_med3     := a3 * b3               # Indirect effect through Posttest_VI_AE
+  
+  total_ind    := (a1 * b1) + (a2 * b2) + (a3 * b3) # Sum of all three indirect paths
+  
+  direct       := cp                    # Direct effect of Condition
+  total_effect := cp + total_ind        # Total effect of Condition
+  
+  # Pairwise Contrasts to compare the mediation mechanisms
+  contrast_EQ_vs_RB := (a1 * b1) - (a2 * b2) # Posttest_VI_EQ vs AveragePR_RB_Posttest
+  contrast_EQ_vs_AE := (a1 * b1) - (a3 * b3) # Posttest_VI_EQ vs Posttest_VI_AE
+  contrast_RB_vs_AE := (a2 * b2) - (a3 * b3) # AveragePR_RB_Posttest vs Posttest_VI_AE
+'
+
+Mediators3_Parallel_Mediation = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(Mediators3_Parallel_Mediation_Model, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(Mediators3_Parallel_Mediation, ci = TRUE)
+
+
+```
+
+### Three parallel mediators: Equivalence rating, encoding, blank inclusion
+
+```{r med-3-vi-eq-encoding-blank}
+Mediators3_Parallel_Mediation_Model.PRBlankVIEQ <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  Posttest_VI_EQ        ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*Pretest_VI_EQ
+  AveragePR_RB_Posttest ~ a2*Condition + cov_m2a*AveragePretest_EQ + cov_m2b*MM + cov_m2c*AveragePR_RB_Pretest
+  BlankPRAve_Posttest        ~ a3*Condition + cov_m3a*AveragePretest_EQ + cov_m3b*MM + cov_m3c*BlankPRAve_Pretest
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*Posttest_VI_EQ + b2*AveragePR_RB_Posttest + b3*BlankPRAve_Posttest + 
+          cp*Condition + 
+          cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*Pretest_VI_EQ + cov_yd*AveragePR_RB_Pretest + cov_ye*BlankPRAve_Pretest
+
+  # 3. Allow residual variances of all parallel mediators to cross-correlate
+  Posttest_VI_EQ        ~~ AveragePR_RB_Posttest
+  Posttest_VI_EQ        ~~ BlankPRAve_Posttest
+  AveragePR_RB_Posttest ~~ BlankPRAve_Posttest
+
+  # 4. Calculate Indirect, Total, and Contrast Effects
+  ind_med1     := a1 * b1               # Indirect effect through Posttest_VI_EQ
+  ind_med2     := a2 * b2               # Indirect effect through AveragePR_RB_Posttest
+  ind_med3     := a3 * b3               # Indirect effect through BlankPRAve_Posttest
+  
+  total_ind    := (a1 * b1) + (a2 * b2) + (a3 * b3) # Sum of all three indirect paths
+  
+  direct       := cp                    # Direct effect of Condition
+  total_effect := cp + total_ind        # Total effect of Condition
+  
+  # Pairwise Contrasts to compare the mediation mechanisms
+  contrast_EQ_vs_RB := (a1 * b1) - (a2 * b2) # Posttest_VI_EQ vs AveragePR_RB_Posttest
+  contrast_EQ_vs_Bl := (a1 * b1) - (a3 * b3) # Posttest_VI_EQ vs Posttest_VI_AE
+  contrast_RB_vs_Bl := (a2 * b2) - (a3 * b3) # AveragePR_RB_Posttest vs Posttest_VI_AE
+'
+
+fix.Mediators3_Parallel_Mediation = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(Mediators3_Parallel_Mediation_Model.PRBlankVIEQ, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(fix.Mediators3_Parallel_Mediation, ci = TRUE)
+
+
+```
+
+
+Path diagram for the three-mediator model.
+
+```{r med-3-path-diagram}
+
+lavaanPlot(model = fix.Mediators3_Parallel_Mediation, node_options = list(shape = "box", fontname = "Helvetica"), edge_options = list(color = "grey"), coefs = FALSE)
+
+
+```
+
+
+
+
+### Four parallel mediators
+
+```{r med-4}
+Mediators4_Parallel_Mediation_Model <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  Posttest_VI_EQ        ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*Pretest_VI_EQ
+  AveragePR_RB_Posttest ~ a2*Condition + cov_m2a*AveragePretest_EQ + cov_m2b*MM + cov_m2c*AveragePR_RB_Pretest
+  Posttest_VI_AE        ~ a3*Condition + cov_m3a*AveragePretest_EQ + cov_m3b*MM + cov_m3c*Pretest_VI_AE
+  BlankPRAve_Posttest   ~ a4*Condition + cov_m4a*AveragePretest_EQ + cov_m4b*MM + cov_m4c*BlankPRAve_Pretest
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*Posttest_VI_EQ + b2*AveragePR_RB_Posttest + b3*Posttest_VI_AE + b4*BlankPRAve_Posttest + 
+          cp*Condition + 
+          cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*Pretest_VI_EQ + cov_yd*AveragePR_RB_Pretest + cov_ye*Pretest_VI_AE + cov_yf*BlankPRAve_Pretest
+
+  # 3. Allow residual variances of all 4 parallel mediators to cross-correlate (6 unique pairs)
+  Posttest_VI_EQ        ~~ AveragePR_RB_Posttest
+  Posttest_VI_EQ        ~~ Posttest_VI_AE
+  Posttest_VI_EQ        ~~ BlankPRAve_Posttest
+  AveragePR_RB_Posttest ~~ Posttest_VI_AE
+  AveragePR_RB_Posttest ~~ BlankPRAve_Posttest
+  Posttest_VI_AE        ~~ BlankPRAve_Posttest
+
+  # 4. Calculate Indirect, Total, and Contrast Effects
+  ind_med1     := a1 * b1               # Indirect effect through Posttest_VI_EQ
+  ind_med2     := a2 * b2               # Indirect effect through AveragePR_RB_Posttest
+  ind_med3     := a3 * b3               # Indirect effect through Posttest_VI_AE
+  ind_med4     := a4 * b4               # Indirect effect through BlankPRAve_Posttest
+  
+  total_ind    := (a1 * b1) + (a2 * b2) + (a3 * b3) + (a4 * b4) # Sum of all four indirect paths
+  
+  direct       := cp                    # Direct effect of Condition
+  total_effect := cp + total_ind        # Total effect of Condition
+  
+  # Pairwise Contrasts to compare the mediation mechanisms
+  contrast_EQ_vs_RB   := (a1 * b1) - (a2 * b2)
+  contrast_EQ_vs_AE   := (a1 * b1) - (a3 * b3)
+  contrast_EQ_vs_Blank := (a1 * b1) - (a4 * b4)
+  contrast_RB_vs_AE   := (a2 * b2) - (a3 * b3)
+  contrast_RB_vs_Blank := (a2 * b2) - (a4 * b4)
+  contrast_AE_vs_Blank := (a3 * b3) - (a4 * b4)
+'
+
+
+
+
+Mediators4_Parallel_Mediation = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(MM = scale(MM)) %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(Mediators4_Parallel_Mediation_Model, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(Mediators4_Parallel_Mediation, ci = TRUE)
+
+```
+
+
+
+
+
+### Mediator: encoding (unstandardized `MM`)
+
+The encoding model from above, without standardizing `MM`.
+
+```{r med-encoding-unscaled}
+parallel_model_cov <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  AveragePR_RB_Posttest ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*AveragePR_RB_Pretest
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*AveragePR_RB_Posttest + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*AveragePR_RB_Pretest
+
+  # 4. Calculate Indirect and Total Effects (Formula stays the same)
+  indirect    := a1 * b1
+  direct := cp
+  total_effect   := cp + (a1 * b1)
+'
+
+
+
+
+fit = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  sem(parallel_model_cov, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(fit, ci = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Mediator: change in encoding (posttest − pretest)
+
+```{r med-encoding-change}
+parallel_model_cov <- '
+  # 1. Mediator regressions (Paths a + Covariate effects)
+  AveragePR_RBChange ~ a1*Condition + cov_m1a*AveragePretest_EQ + cov_m1b*MM + cov_m1c*AveragePR_RB_Pretest
+
+  # 2. Outcome regression (Paths b, Direct Path cp + Covariate effects)
+  Score ~ b1*AveragePR_RBChange + cp*Condition + cov_ya*AveragePretest_EQ + cov_yb*MM + cov_yc*AveragePR_RB_Pretest
+
+  # 4. Calculate Indirect and Total Effects (Formula stays the same)
+  indirect    := a1 * b1
+  direct := cp
+  total_effect   := cp + (a1 * b1)
+'
+
+
+
+
+fit = PKGData %>%
+  filter(TestTime == "Posttest") %>%
+  filter(ProblemType == "EQ") %>%
+  mutate(ProblemNumber = as.factor(ProblemNumber)) %>%
+  mutate(AveragePR_RBChange = AveragePR_RB_Pretest - AveragePR_RB_Posttest) %>%
+  sem(parallel_model_cov, data = ., se = "bootstrap", bootstrap = 5000)
+
+summary(fit, ci = TRUE)
+```
+
+
+
+
+## Problem grouping task
+
+
+The analysis uses the features the problems were designed around (problem type, matching addends, number of addends, and blank location). Numbered comments inside the code mark each step.
+
+
+
+### Setup
+
+```{r design-setup}
+# ==========================================================
+# STEP 1: PACKAGES AND BASIC VARIABLE CODING
+# ==========================================================
+
+library(dplyr)
+library(tidyr)
+library(lme4)
+library(emmeans)
+library(ggplot2)
+
+GroupingDataset <- GroupingDataset %>%
+  mutate(
+    ParticipantID = factor(ParticipantID),
+
+    Condition = factor(
+      Condition,
+      levels = c(
+        "Speech Only",
+        "Speech and Gesture"
+      )
+    ),
+
+    TestTime = factor(
+      TestTime,
+      levels = c(
+        "Pretest",
+        "Posttest"
+      )
+    ),
+
+    ProblemA_DesignType = factor(
+      ProblemA_DesignType,
+      levels = c(
+        "Traditional",
+        "Equivalence"
+      )
+    ),
+
+    ProblemB_DesignType = factor(
+      ProblemB_DesignType,
+      levels = c(
+        "Traditional",
+        "Equivalence"
+      )
+    ),
+
+    ProblemA_BlankLocation = factor(
+      ProblemA_BlankLocation,
+      levels = c(
+        "Left",
+        "Right"
+      )
+    ),
+
+    ProblemB_BlankLocation = factor(
+      ProblemB_BlankLocation,
+      levels = c(
+        "Left",
+        "Right"
+      )
+    ),
+
+    GroupedTogether = as.numeric(GroupedTogether)
+  )
+```
+
+
+
+### Data checks
+
+```{r design-checks}
+# ==========================================================
+# STEP 2: DATA INTEGRITY CHECKS
+# ==========================================================
+
+cat("\n===== TOTAL ROWS =====\n")
+print(nrow(GroupingDataset))
+
+
+cat("\n===== PARTICIPANTS BY CONDITION =====\n")
+
+print(
+  GroupingDataset %>%
+    distinct(
+      ParticipantID,
+      Condition
+    ) %>%
+    count(
+      Condition,
+      name = "Participants"
+    )
+)
+
+
+cat("\n===== ROWS BY TEST TIME =====\n")
+
+print(
+  table(
+    GroupingDataset$TestTime,
+    useNA = "ifany"
+  )
+)
+
+
+cat("\n===== MISSING CONDITION =====\n")
+
+print(
+  GroupingDataset %>%
+    filter(is.na(Condition)) %>%
+    distinct(ParticipantID)
+)
+```
+```{r design-checks-2}
+cat("\n===== SAME DESIGN TYPE =====\n")
+print(
+  table(
+    GroupingDataset$SameDesignType,
+    useNA = "ifany"
+  )
+)
+
+
+cat("\n===== SAME ADDEND NUMBER =====\n")
+print(
+  table(
+    GroupingDataset$SameAddendNumber,
+    useNA = "ifany"
+  )
+)
+
+
+cat("\n===== SAME BLANK LOCATION =====\n")
+print(
+  table(
+    GroupingDataset$SameBlankLocation,
+    useNA = "ifany"
+  )
+)
+
+
+cat("\n===== SAME MATCHING ADDEND COUNT =====\n")
+print(
+  table(
+    GroupingDataset$SameMatchingAddendCount,
+    useNA = "ifany"
+  )
+)
+```
+
+
+### Feature overlap
+
+```{r design-feature-overlap}
+# ==========================================================
+# STEP 3: ORIGINAL DESIGN FEATURE OVERLAP
+# ==========================================================
+
+cat("\n===== DESIGN TYPE x MATCHING ADDENDS =====\n")
+
+print(
+  table(
+    GroupingDataset$SameDesignType,
+    GroupingDataset$SameMatchingAddendCount
+  )
+)
+
+
+cat("\n===== DESIGN TYPE x ADDEND NUMBER =====\n")
+
+print(
+  table(
+    GroupingDataset$SameDesignType,
+    GroupingDataset$SameAddendNumber
+  )
+)
+
+
+cat("\n===== DESIGN TYPE x BLANK LOCATION =====\n")
+
+print(
+  table(
+    GroupingDataset$SameDesignType,
+    GroupingDataset$SameBlankLocation
+  )
+)
+
+
+cat("\n===== ADDEND NUMBER x BLANK LOCATION =====\n")
+
+print(
+  table(
+    GroupingDataset$SameAddendNumber,
+    GroupingDataset$SameBlankLocation
+  )
+)
+
+
+cat("\n===== MATCHING ADDENDS x ADDEND NUMBER =====\n")
+
+print(
+  table(
+    GroupingDataset$SameMatchingAddendCount,
+    GroupingDataset$SameAddendNumber
+  )
+)
+
+
+cat("\n===== MATCHING ADDENDS x BLANK LOCATION =====\n")
+
+print(
+  table(
+    GroupingDataset$SameMatchingAddendCount,
+    GroupingDataset$SameBlankLocation
+  )
+)
+```
+
+
+### Raw grouping rates
+
+```{r design-raw-rates}
+# ==========================================================
+# STEP 4: RAW GROUPING RATES BY DESIGN FEATURE
+# ==========================================================
+
+grouping_by_type <- GroupingDataset %>%
+  group_by(
+    TestTime,
+    SameDesignType
+  ) %>%
+  summarise(
+    GroupingRate = mean(
+      GroupedTogether,
+      na.rm = TRUE
+    ),
+    N = n(),
+    .groups = "drop"
+  )
+
+grouping_by_type
+
+
+
+grouping_by_matching <- GroupingDataset %>%
+  group_by(
+    TestTime,
+    SameMatchingAddendCount
+  ) %>%
+  summarise(
+    GroupingRate = mean(
+      GroupedTogether,
+      na.rm = TRUE
+    ),
+    N = n(),
+    .groups = "drop"
+  )
+
+grouping_by_matching
+
+
+grouping_by_addends <- GroupingDataset %>%
+  group_by(
+    TestTime,
+    SameAddendNumber
+  ) %>%
+  summarise(
+    GroupingRate = mean(
+      GroupedTogether,
+      na.rm = TRUE
+    ),
+    N = n(),
+    .groups = "drop"
+  )
+
+grouping_by_addends
+
+
+grouping_by_blank <- GroupingDataset %>%
+  group_by(
+    TestTime,
+    SameBlankLocation
+  ) %>%
+  summarise(
+    GroupingRate = mean(
+      GroupedTogether,
+      na.rm = TRUE
+    ),
+    N = n(),
+    .groups = "drop"
+  )
+
+grouping_by_blank
+
+
+
+
+
+
+```
+
+
+
+
+### Pretest baselines by feature
+
+```{r design-pretest-baselines}
+# ==========================================================
+# STEP 5: FEATURE-SPECIFIC PRETEST BASELINES
+# ==========================================================
+
+pretest_scores <- GroupingDataset %>%
+  filter(
+    TestTime == "Pretest"
+  ) %>%
+  group_by(
+    ParticipantID
+  ) %>%
+  summarise(
+
+    # ------------------------------------------------------
+    # SAME PROBLEM TYPE
+    # Traditional-Traditional or Equivalence-Equivalence
+    # versus mixed problem type
+    # ------------------------------------------------------
+
+    PreTypeSame = mean(
+      GroupedTogether[
+        SameDesignType == 1
+      ],
+      na.rm = TRUE
+    ),
+
+    PreTypeDifferent = mean(
+      GroupedTogether[
+        SameDesignType == 0
+      ],
+      na.rm = TRUE
+    ),
+
+    PreTypeSensitivity =
+      PreTypeSame -
+      PreTypeDifferent,
+
+
+    # ------------------------------------------------------
+    # MATCHING ADDENDS
+    # Same 2/3 matching-addend design condition
+    # versus different condition
+    # ------------------------------------------------------
+
+    PreMatchingSame = mean(
+      GroupedTogether[
+        SameMatchingAddendCount == 1
+      ],
+      na.rm = TRUE
+    ),
+
+    PreMatchingDifferent = mean(
+      GroupedTogether[
+        SameMatchingAddendCount == 0
+      ],
+      na.rm = TRUE
+    ),
+
+    PreMatchingSensitivity =
+      PreMatchingSame -
+      PreMatchingDifferent,
+
+
+    # ------------------------------------------------------
+    # NUMBER OF ADDENDS
+    # ------------------------------------------------------
+
+    PreAddendSame = mean(
+      GroupedTogether[
+        SameAddendNumber == 1
+      ],
+      na.rm = TRUE
+    ),
+
+    PreAddendDifferent = mean(
+      GroupedTogether[
+        SameAddendNumber == 0
+      ],
+      na.rm = TRUE
+    ),
+
+    PreAddendSensitivity =
+      PreAddendSame -
+      PreAddendDifferent,
+
+
+    # ------------------------------------------------------
+    # BLANK LOCATION
+    # ------------------------------------------------------
+
+    PreBlankSame = mean(
+      GroupedTogether[
+        SameBlankLocation == 1
+      ],
+      na.rm = TRUE
+    ),
+
+    PreBlankDifferent = mean(
+      GroupedTogether[
+        SameBlankLocation == 0
+      ],
+      na.rm = TRUE
+    ),
+
+    PreBlankSensitivity =
+      PreBlankSame -
+      PreBlankDifferent,
+
+    .groups = "drop"
+  )
+
+cat("\n===== PRETEST TYPE SENSITIVITY =====\n")
+print(
+  summary(
+    pretest_scores$PreTypeSensitivity
+  )
+)
+
+
+cat("\n===== PRETEST MATCHING-ADDEND SENSITIVITY =====\n")
+print(
+  summary(
+    pretest_scores$PreMatchingSensitivity
+  )
+)
+
+
+cat("\n===== PRETEST ADDEND-NUMBER SENSITIVITY =====\n")
+print(
+  summary(
+    pretest_scores$PreAddendSensitivity
+  )
+)
+
+
+cat("\n===== PRETEST BLANK-LOCATION SENSITIVITY =====\n")
+print(
+  summary(
+    pretest_scores$PreBlankSensitivity
+  )
+)
+```
+
+
+
+
+
+```{r design-pretest-baselines-2}
+pretest_correlations <- pretest_scores %>%
+  dplyr::select(
+    PreTypeSensitivity,
+    PreMatchingSensitivity,
+    PreAddendSensitivity,
+    PreBlankSensitivity
+  ) %>%
+  cor(
+    use = "pairwise.complete.obs"
+  )
+
+round(
+  pretest_correlations,
+  3
+)
+```
+
+```{r design-pretest-baselines-3}
+pretest_scores <- pretest_scores %>%
+  mutate(
+    PreType_z =
+      as.numeric(scale(PreTypeSensitivity)),
+
+    PreMatching_z =
+      as.numeric(scale(PreMatchingSensitivity)),
+
+    PreAddend_z =
+      as.numeric(scale(PreAddendSensitivity)),
+
+    PreBlank_z =
+      as.numeric(scale(PreBlankSensitivity))
+  )
+
+
+pretest_scores %>%
+  dplyr::select(
+    PreType_z,
+    PreMatching_z,
+    PreAddend_z,
+    PreBlank_z
+  ) %>%
+  summary()
+
+```
+
+
+
+### Posttest analysis dataset
+
+```{r design-posttest-data}
+# ==========================================================
+# STEP 6: CREATE POSTTEST ANALYSIS DATASET
+# ==========================================================
+
+posttest <- GroupingDataset %>%
+  filter(
+    TestTime == "Posttest"
+  ) %>%
+  left_join(
+    pretest_scores %>%
+      dplyr::select(
+        ParticipantID,
+        PreType_z,
+        PreMatching_z,
+        PreAddend_z,
+        PreBlank_z
+      ),
+    by = "ParticipantID"
+  )
+posttest <- posttest %>%
+  mutate(
+    PairID = interaction(
+      ProblemA_ID,
+      ProblemB_ID,
+      drop = TRUE
+    )
+  )
+cat("\n===== POSTTEST PARTICIPANTS BY CONDITION =====\n")
+
+print(
+  posttest %>%
+    distinct(
+      ParticipantID,
+      Condition
+    ) %>%
+    count(Condition)
+)
+
+```
+
+
+
+
+```{r design-posttest-data-2}
+cat("\n===== MISSING PRETEST COVARIATES =====\n")
+
+print(
+  colSums(
+    is.na(
+      posttest[, c(
+        "PreType_z",
+        "PreMatching_z",
+        "PreAddend_z",
+        "PreBlank_z"
+      )]
+    )
+  )
+)
+
+cat("\n===== POSTTEST DESIGN FEATURES =====\n")
+
+print(
+  table(
+    posttest$SameDesignType
+  )
+)
+
+print(
+  table(
+    posttest$SameMatchingAddendCount
+  )
+)
+
+print(
+  table(
+    posttest$SameAddendNumber
+  )
+)
+
+print(
+  table(
+    posttest$SameBlankLocation
+  )
+)
+```
+
+### Models by design feature
+
+```{r design-model-type}
+model_type <- glmer(
+  GroupedTogether ~
+    PreType_z + AveragePretest_EQ + Condition * SameDesignType +
+     
+    (1 | ParticipantID) +
+    (1 | PairID),
+
+  data = posttest,
+
+  family = binomial(link = "logit"),
+
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(
+      maxfun = 200000
+    )
+  )
+)
+
+summary(model_type)
+
+isSingular(model_type)
+```
+
+
+```{r design-model-matching}
+model_matching <- glmer(
+  GroupedTogether ~
+   PreMatching_z + AveragePretest_EQ + Condition * SameMatchingAddendCount +
+    
+    (1 | ParticipantID) +
+    (1 | PairID),
+
+  data = posttest,
+
+  family = binomial(link = "logit"),
+
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(
+      maxfun = 200000
+    )
+  )
+)
+summary(model_matching)
+
+isSingular(model_matching)
+```
+
+Difference-of-differences test for the matching-addends effect:
+
+```{r design-matching-did}
+emm_matching_interaction <- emmeans(
+  model_matching,
+  ~ SameMatchingAddendCount * Condition,
+  at = list(
+    PreMatching_z = 0,
+    AveragePretest_EQ = mean(
+      posttest$AveragePretest_EQ,
+      na.rm = TRUE
+    )
+  )
+)
+
+emm_matching_interaction
+
+matching_DiD <- contrast(
+  emm_matching_interaction,
+  interaction = "pairwise"
+)
+
+matching_DiD
+```
+
+```{r design-matching-did-2}
+summary(
+  matching_DiD,
+  infer = c(TRUE, TRUE)
+)
+```
+
+
+```{r design-matching-did-3}
+emmeans(model_matching, pairwise ~ Condition | SameMatchingAddendCount)
+```
+
+
+
+```{r design-model-addends}
+model_addends <- glmer(
+  GroupedTogether ~
+   AveragePretest_EQ + PreAddend_z + Condition * SameAddendNumber +
+    
+    (1 | ParticipantID) +
+    (1 | PairID),
+
+  data = posttest,
+
+  family = binomial(link = "logit"),
+
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(
+      maxfun = 200000
+    )
+  )
+)
+summary(model_addends)
+
+isSingular(model_addends)
+```
+
+
+
+
+```{r design-model-blank}
+model_blank <- glmer(
+  GroupedTogether ~
+   AveragePretest_EQ + Condition * SameBlankLocation +
+    PreBlank_z +
+    (1 | ParticipantID) +
+    (1 | PairID),
+
+  data = posttest,
+
+  family = binomial(link = "logit"),
+
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(
+      maxfun = 200000
+    )
+  )
+)
+summary(model_blank)
+
+isSingular(model_blank)
+```
+
+
+#### Matching addends: estimated marginal means
+
+```{r design-matching-emmeans}
+emm_matching <- emmeans(
+  model_matching,
+  ~ SameMatchingAddendCount | Condition,
+  at = list(
+    PreMatching_z = 0
+  ),
+  type = "response"
+)
+
+emm_matching
+
+pairs(
+  emm_matching,
+  adjust = "bonferroni"
+)
+
+emm_matching_condition <- emmeans(
+  model_matching,
+  ~ Condition | SameMatchingAddendCount,
+  at = list(
+    PreMatching_z = 0
+  ),
+  type = "response"
+)
+
+emm_matching_condition
+
+pairs(
+  emm_matching_condition,
+  adjust = "bonferroni"
+)
+```
+
+
+```{r design-matching-emmeans-2}
+
+emm_matching
+pairs(
+  emm_matching,
+  adjust = "bonferroni"
+)
+emm_matching_condition
+pairs(
+  emm_matching_condition,
+  adjust = "bonferroni"
+)
+```
+
+
+```{r design-interaction-pvalues}
+interaction_pvalues <- c(
+  ProblemType = 0.293,
+  MatchingAddends = 0.01178,
+  AddendNumber = 0.0757,
+  BlankLocation = 0.894
+)
+
+p.adjust(
+  interaction_pvalues,
+  method = "bonferroni"
+)
+```
+
+
+
+
+
+#### Figure
+
+```{r design-matching-figure}
+matching_plot <- as.data.frame(emm_matching)
+
+matching_plot$MatchingAddends <- factor(
+  matching_plot$SameMatchingAddendCount,
+  levels = c(0, 1),
+  labels = c(
+    "Different Matching Addends",
+    "Same Matching Addends"
+  )
+)
+
+ggplot(
+  matching_plot,
+  aes(
+    x = MatchingAddends,
+    y = prob,
+    color = Condition,
+    group = Condition
+  )
+) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_point(
+    size = 3.5
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = asymp.LCL,
+      ymax = asymp.UCL
+    ),
+    width = .08
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, .20),
+    labels = scales::percent_format(
+      accuracy = 1
+    )
+  ) +
+  labs(
+    x = "Matching Addends",
+    y = "Predicted Probability of Grouping Together",
+    color = "Instructional Condition"
+  ) +
+  theme_classic(
+    base_size = 14
+  ) +
+  theme(
+    legend.position = "top"
+  )
+```
+
+
+### Combined model with all design features
+
+
+```{r design-model-combined}
+model_combined <- glmer(
+  GroupedTogether ~
+    AveragePretest_EQ +
+    PreType_z +
+    PreMatching_z +
+    PreAddend_z +
+    PreBlank_z +
+
+    Condition * SameDesignType +
+    Condition * SameMatchingAddendCount +
+    Condition * SameAddendNumber +
+    Condition * SameBlankLocation +
+
+    (1 | ParticipantID) +
+    (1 | PairID),
+
+  data = posttest,
+
+  family = binomial(
+    link = "logit"
+  ),
+
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(
+      maxfun = 200000
+    )
+  )
+)
+summary(model_combined,correlation=TRUE)
+
+isSingular(model_combined)
+print(model_combined, correlation=TRUE)
+```
+
+```{r design-model-combined-no-addends}
+model_combined.NoAddend <- glmer(
+  GroupedTogether ~
+    AveragePretest_EQ +
+
+    Condition * SameDesignType +
+    Condition * SameMatchingAddendCount +
+    Condition * SameBlankLocation +
+
+    (1 | ParticipantID) +
+    (1 | PairID),
+
+  data = posttest,
+
+  family = binomial(
+    link = "logit"
+  ),
+
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(
+      maxfun = 200000
+    )
+  )
+)
+summary(model_combined.NoAddend,correlation=TRUE)
+
+```
+
+
+```{r design-combined-emmeans}
+emm_matching_interaction_combined <- emmeans(
+  model_combined,
+  ~ SameMatchingAddendCount * Condition,
+  at = list(
+    PreMatching_z = 0,
+    AveragePretest_EQ = mean(
+      posttest$AveragePretest_EQ,
+      na.rm = TRUE
+    )
+  )
+)
+
+emm_matching_interaction_combined
+
+matching_DiD_Combined <- contrast(
+  emm_matching_interaction_combined,
+  interaction = "pairwise"
+)
+
+matching_DiD_Combined
+```
+
+
+
+
+#### Model comparisons
+
+```{r design-combined-comparisons}
+model_combined_no_interactions <- glmer(
+  GroupedTogether ~
+    AveragePretest_EQ +
+    PreType_z +
+    PreMatching_z +
+    PreAddend_z +
+    PreBlank_z +
+
+    Condition +
+    SameDesignType +
+    SameMatchingAddendCount +
+    SameAddendNumber +
+    SameBlankLocation +
+
+    (1 | ParticipantID) +
+    (1 | PairID),
+
+  data = posttest,
+
+  family = binomial(
+    link = "logit"
+  ),
+
+  control = glmerControl(
+    optimizer = "bobyqa",
+    optCtrl = list(
+      maxfun = 200000
+    )
+  )
+)
+
+summary(model_combined_no_interactions)
+
+isSingular(model_combined_no_interactions)
+```
+
+```{r design-combined-comparisons-2}
+anova(
+  model_combined_no_interactions,
+  model_combined,
+  test = "Chisq"
+)
+```
+
+```{r design-combined-comparisons-3}
+model_no_matching_interaction <- update(
+  model_combined,
+  . ~ . -
+    Condition:SameMatchingAddendCount
+)
+
+anova(
+  model_no_matching_interaction,
+  model_combined,
+  test = "Chisq"
+)
+```
+
+
+
+```{r design-combined-comparisons-4}
+model_no_type_interaction <- update(
+  model_combined,
+  . ~ . -
+    Condition:SameDesignType
+)
+
+anova(
+  model_no_type_interaction,
+  model_combined,
+  test = "Chisq"
+)
+
+model_no_addend_interaction <- update(
+  model_combined,
+  . ~ . -
+    Condition:SameAddendNumber
+)
+
+anova(
+  model_no_addend_interaction,
+  model_combined,
+  test = "Chisq"
+)
+model_no_blank_interaction <- update(
+  model_combined,
+  . ~ . -
+    Condition:SameBlankLocation
+)
+
+anova(
+  model_no_blank_interaction,
+  model_combined,
+  test = "Chisq"
+)
+```
+
+
+
+```{r design-combined-contrasts}
+mean_pretest_math <- mean(
+  posttest$AveragePretest_EQ,
+  na.rm = TRUE
+)
+
+mean_pretest_math
+
+
+emm_matching_combined <- emmeans(
+  model_combined,
+  ~ SameMatchingAddendCount | Condition,
+
+  at = list(
+    AveragePretest_EQ = mean_pretest_math,
+    PreType_z = 0,
+    PreMatching_z = 0,
+    PreAddend_z = 0,
+    PreBlank_z = 0
+  ),
+
+  type = "response"
+)
+
+emm_matching_combined
+```
+
+```{r design-combined-contrasts-2}
+pairs(
+  emm_matching_combined,
+  adjust = "bonferroni"
+)
+
+emm_matching_condition_combined <- emmeans(
+  model_combined,
+  ~ Condition | SameMatchingAddendCount,
+
+  at = list(
+    AveragePretest_EQ = mean_pretest_math,
+    PreType_z = 0,
+    PreMatching_z = 0,
+    PreAddend_z = 0,
+    PreBlank_z = 0
+  ),
+
+  type = "response"
+)
+
+emm_matching_condition_combined
+
+pairs(
+  emm_matching_condition_combined,
+  adjust = "bonferroni"
+)
+```
+
+
+```{r design-combined-summary}
+summary(model_combined)
+
+isSingular(model_combined)
+
+
+anova(
+  model_combined_no_interactions,
+  model_combined,
+  test = "Chisq"
+)
+```
+
+
+```{r design-combined-refit-comparisons}
+model_no_matching_interaction <- update(
+  model_combined,
+  . ~ . - Condition:SameMatchingAddendCount
+)
+
+anova(
+  model_no_matching_interaction,
+  model_combined,
+  test = "Chisq"
+)
+
+model_no_type_interaction <- update(
+  model_combined,
+  . ~ . - Condition:SameDesignType
+)
+
+anova(
+  model_no_type_interaction,
+  model_combined,
+  test = "Chisq"
+)
+
+model_no_addend_interaction <- update(
+  model_combined,
+  . ~ . - Condition:SameAddendNumber
+)
+
+anova(
+  model_no_addend_interaction,
+  model_combined,
+  test = "Chisq"
+)
+
+model_no_blank_interaction <- update(
+  model_combined,
+  . ~ . - Condition:SameBlankLocation
+)
+
+anova(
+  model_no_blank_interaction,
+  model_combined,
+  test = "Chisq"
+)
+
+
+combined_interaction_pvalues <- c(
+  ProblemType = .8561,
+  MatchingAddends = .02952,
+  AddendNumber = .3073,
+  BlankLocation = .8629
+)
+
+p.adjust(
+  combined_interaction_pvalues,
+  method = "bonferroni"
+)
+```
+
+
+### Figures
+
+```{r design-figure-model}
+mean_pretest_math <- mean(
+  posttest$AveragePretest_EQ,
+  na.rm = TRUE
+)
+
+emm_matching <- emmeans(
+  model_matching,
+  ~ SameMatchingAddendCount | Condition,
+  at = list(
+    PreMatching_z = 0,
+    AveragePretest_EQ = mean_pretest_math
+  ),
+  type = "response"
+)
+
+matching_plot <- as.data.frame(emm_matching)
+
+matching_plot <- matching_plot %>%
+  mutate(
+    MatchingAddends = factor(
+      SameMatchingAddendCount,
+      levels = c(0, 1),
+      labels = c(
+        "Different Matching Addends",
+        "Same Matching Addends"
+      )
+    )
+  )
+
+
+ggplot(
+  matching_plot,
+  aes(
+    x = MatchingAddends,
+    y = prob,
+    color = Condition,
+    group = Condition
+  )
+) +
+  geom_line(
+    linewidth = 1.1
+  ) +
+  geom_point(
+    size = 3.5
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = asymp.LCL,
+      ymax = asymp.UCL
+    ),
+    width = 0.06,
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, .20),
+    labels = scales::percent_format(
+      accuracy = 1
+    )
+  ) +
+  labs(
+    x = "Matching Addends Relationship",
+    y = "Predicted Probability of Grouping Together",
+    color = "Instruction Condition"
+  ) +
+  theme_classic(
+    base_size = 14
+  ) +
+  theme(
+    legend.position = "top"
+  )
+
+```
+
+```{r design-figure-model-2}
+ggplot(
+  matching_plot,
+  aes(
+    x = MatchingAddends,
+    y = prob,
+    shape = Condition,
+    color = Condition
+  )
+) +
+  geom_point(
+    position = position_dodge(width = 0.25),
+    size = 4
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = asymp.LCL,
+      ymax = asymp.UCL
+    ),
+    position = position_dodge(width = 0.25),
+    width = 0.08,
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, .20),
+    labels = scales::percent_format(
+      accuracy = 1
+    )
+  ) +
+  labs(
+    x = "Matching Addends Relationship",
+    y = "Predicted Probability of Grouping Together",
+    color = "Instruction Condition",
+    shape = "Instruction Condition"
+  ) +
+  theme_classic(
+    base_size = 14
+  ) +
+  theme(
+    legend.position = "top"
+  )
+```
+
+
+#### Participant-level matching effect
+
+```{r design-participant-matching}
+participant_matching <- posttest %>%
+  group_by(
+    ParticipantID,
+    Condition,
+    SameMatchingAddendCount
+  ) %>%
+  summarise(
+    GroupingRate = mean(
+      GroupedTogether,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    MatchingAddends = factor(
+      SameMatchingAddendCount,
+      levels = c(0, 1),
+      labels = c(
+        "Different Matching Addends",
+        "Same Matching Addends"
+      )
+    )
+  )
+
+ggplot(
+  participant_matching,
+  aes(
+    x = MatchingAddends,
+    y = GroupingRate,
+    color = Condition
+  )
+) +
+  geom_jitter(
+    width = 0.08,
+    alpha = 0.35,
+    size = 1.8
+  ) +
+  stat_summary(
+    aes(group = Condition),
+    fun = mean,
+    geom = "point",
+    position = position_dodge(width = .25),
+    size = 4
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, .20),
+    labels = scales::percent_format(
+      accuracy = 1
+    )
+  ) +
+  labs(
+    x = "Matching Addends Relationship",
+    y = "Participant Grouping Rate",
+    color = "Instruction Condition"
+  ) +
+  theme_classic(
+    base_size = 14
+  ) +
+  theme(
+    legend.position = "top"
+  )
+```
+
+```{r design-participant-matching-2}
+participant_matching_effect <- participant_matching %>%
+  dplyr::select(
+    ParticipantID,
+    Condition,
+    SameMatchingAddendCount,
+    GroupingRate
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = SameMatchingAddendCount,
+    values_from = GroupingRate,
+    names_prefix = "Matching_"
+  ) %>%
+  mutate(
+    MatchingAddendsEffect =
+      Matching_1 - Matching_0
+  )
+
+ggplot(
+  participant_matching_effect,
+  aes(
+    x = Condition,
+    y = MatchingAddendsEffect,
+    color = Condition
+  )
+) +
+  geom_jitter(
+    width = .10,
+    alpha = .45,
+    size = 2
+  ) +
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    size = 5
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    x = NULL,
+    y = "Matching Addends Grouping Advantage"
+  ) +
+  theme_classic(
+    base_size = 14
+  ) +
+  theme(
+    legend.position = "none"
+  )
+```
+
+
+
+
+
+
+
+#### Participant-level feature sensitivity
+
+```{r design-participant-features}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+feature_long <- GroupingDataset %>%
+  dplyr::select(
+    ParticipantID,
+    Condition,
+    TestTime,
+    GroupedTogether,
+    SameDesignType,
+    SameMatchingAddendCount,
+    SameAddendNumber,
+    SameBlankLocation
+  ) %>%
+  pivot_longer(
+    cols = c(
+      SameDesignType,
+      SameMatchingAddendCount,
+      SameAddendNumber,
+      SameBlankLocation
+    ),
+    names_to = "Feature",
+    values_to = "SameFeature"
+  ) %>%
+  mutate(
+    Feature = recode(
+      Feature,
+      SameDesignType = "Problem Type",
+      SameMatchingAddendCount = "Matching Addends",
+      SameAddendNumber = "Number of Addends",
+      SameBlankLocation = "Blank Location"
+    ),
+
+    SameFeature = factor(
+      SameFeature,
+      levels = c(0, 1),
+      labels = c("Different", "Same")
+    )
+  )
+
+
+feature_summary <- feature_long %>%
+  group_by(
+    Condition,
+    TestTime,
+    Feature,
+    SameFeature
+  ) %>%
+  summarise(
+    GroupingRate = mean(
+      GroupedTogether,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+ggplot(
+  feature_summary %>%
+    filter(TestTime == "Posttest"),
+  aes(
+    x = SameFeature,
+    y = GroupingRate,
+    color = Condition,
+    group = Condition
+  )
+) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_point(
+    size = 3
+  ) +
+  facet_wrap(
+    ~ Feature,
+    nrow = 1
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, .20),
+    labels = scales::percent_format(
+      accuracy = 1
+    )
+  ) +
+  labs(
+    x = "Relationship Between Problems",
+    y = "Proportion Grouped Together",
+    color = "Instruction Condition"
+  ) +
+  theme_classic(
+    base_size = 13
+  ) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(
+      face = "bold"
+    )
+  )
+
+
+```
+
+
+
+
+```{r design-participant-features-2}
+ggplot(
+  feature_summary %>%
+    filter(TestTime == "Posttest"),
+  aes(
+    x = SameFeature,
+    y = GroupingRate,
+    color = Condition,
+    group = Condition
+  )
+) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_point(
+    size = 3
+  ) +
+  facet_wrap(
+    ~ Feature,
+    nrow = 1
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, .20),
+    labels = scales::percent_format(
+      accuracy = 1
+    )
+  ) +
+  labs(
+    x = "Relationship Between Problems",
+    y = "Proportion Grouped Together",
+    color = "Instruction Condition"
+  ) +
+  theme_classic(
+    base_size = 13
+  ) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(
+      face = "bold"
+    )
+  )
+```
+
+
+
+```{r design-figure-model-features}
+mean_math <- mean(
+  posttest$AveragePretest_EQ,
+  na.rm = TRUE
+)
+
+emm_type <- emmeans(
+  model_type,
+  ~ SameDesignType | Condition,
+  at = list(
+    PreType_z = 0,
+    AveragePretest_EQ = mean_math
+  ),
+  type = "response"
+) %>%
+  as.data.frame() %>%
+  mutate(
+    Feature = "Problem Type",
+    SameFeature = SameDesignType
+  )
+
+emm_matching <- emmeans(
+  model_matching,
+  ~ SameMatchingAddendCount | Condition,
+  at = list(
+    PreMatching_z = 0,
+    AveragePretest_EQ = mean_math
+  ),
+  type = "response"
+) %>%
+  as.data.frame() %>%
+  mutate(
+    Feature = "Matching Addends",
+    SameFeature = SameMatchingAddendCount
+  )
+
+emm_addends <- emmeans(
+  model_addends,
+  ~ SameAddendNumber | Condition,
+  at = list(
+    PreAddend_z = 0,
+    AveragePretest_EQ = mean_math
+  ),
+  type = "response"
+) %>%
+  as.data.frame() %>%
+  mutate(
+    Feature = "Number of Addends",
+    SameFeature = SameAddendNumber
+  )
+
+emm_blank <- emmeans(
+  model_blank,
+  ~ SameBlankLocation | Condition,
+  at = list(
+    PreBlank_z = 0,
+    AveragePretest_EQ = mean_math
+  ),
+  type = "response"
+) %>%
+  as.data.frame() %>%
+  mutate(
+    Feature = "Blank Location",
+    SameFeature = SameBlankLocation
+  )
+
+all_emms <- bind_rows(
+  emm_type,
+  emm_matching,
+  emm_addends,
+  emm_blank
+) %>%
+  mutate(
+    SameFeature = factor(
+      SameFeature,
+      levels = c(0, 1),
+      labels = c("Different", "Same")
+    ),
+
+    Feature = factor(
+      Feature,
+      levels = c(
+        "Problem Type",
+        "Matching Addends",
+        "Number of Addends",
+        "Blank Location"
+      )
+    )
+  )
+
+ggplot(
+  all_emms,
+  aes(
+    x = SameFeature,
+    y = prob,
+    color = Condition,
+    group = Condition
+  )
+) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_point(
+    size = 3.2
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = asymp.LCL,
+      ymax = asymp.UCL
+    ),
+    width = .06
+  ) +
+  facet_wrap(
+    ~ Feature,
+    nrow = 1
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, .20),
+    labels = scales::percent_format(
+      accuracy = 1
+    )
+  ) +
+  labs(
+    x = "Relationship Between Problems",
+    y = "Predicted Probability of Grouping Together",
+    color = "Instruction Condition"
+  ) +
+  theme_classic(
+    base_size = 13
+  ) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(
+      face = "bold"
+    )
+  )
+```
+
+
+```{r design-participant-feature-change}
+participant_feature <- feature_long %>%
+  group_by(
+    ParticipantID,
+    Condition,
+    TestTime,
+    Feature,
+    SameFeature
+  ) %>%
+  summarise(
+    GroupingRate = mean(
+      GroupedTogether,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = SameFeature,
+    values_from = GroupingRate
+  ) %>%
+  mutate(
+    FeatureSensitivity =
+      Same - Different
+  )
+
+
+feature_change_summary <- participant_feature %>%
+  group_by(
+    Condition,
+    TestTime,
+    Feature
+  ) %>%
+  summarise(
+    MeanSensitivity = mean(
+      FeatureSensitivity,
+      na.rm = TRUE
+    ),
+
+    SE = sd(
+      FeatureSensitivity,
+      na.rm = TRUE
+    ) /
+      sqrt(
+        sum(
+          !is.na(
+            FeatureSensitivity
+          )
+        )
+      ),
+
+    .groups = "drop"
+  )
+
+
+ggplot(
+  feature_change_summary,
+  aes(
+    x = TestTime,
+    y = MeanSensitivity,
+    color = Condition,
+    group = Condition
+  )
+) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    color = "gray50"
+  ) +
+  geom_line(
+    linewidth = 1
+  ) +
+  geom_point(
+    size = 3.2
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = MeanSensitivity - 1.96 * SE,
+      ymax = MeanSensitivity + 1.96 * SE
+    ),
+    width = .08
+  ) +
+  facet_wrap(
+    ~ Feature,
+    nrow = 1
+  ) +
+  labs(
+    x = "Test Time",
+    y = "Feature-Based Grouping Sensitivity",
+    color = "Instruction Condition"
+  ) +
+  theme_classic(
+    base_size = 13
+  ) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(
+      face = "bold"
+    )
+  )
+
+
+```
+
+
+
+
+```{r design-participant-feature-change-2}
+matching_change <- participant_feature %>%
+  filter(
+    Feature == "Matching Addends"
+  )
+
+matching_change_summary <- matching_change %>%
+  group_by(
+    Condition,
+    TestTime
+  ) %>%
+  summarise(
+    MeanSensitivity = mean(
+      FeatureSensitivity,
+      na.rm = TRUE
+    ),
+
+    SE = sd(
+      FeatureSensitivity,
+      na.rm = TRUE
+    ) /
+      sqrt(
+        sum(
+          !is.na(
+            FeatureSensitivity
+          )
+        )
+      ),
+
+    .groups = "drop"
+  )
+
+ggplot(
+  matching_change_summary,
+  aes(
+    x = TestTime,
+    y = MeanSensitivity,
+    color = Condition,
+    group = Condition
+  )
+) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    color = "gray50"
+  ) +
+  geom_line(
+    linewidth = 1.2
+  ) +
+  geom_point(
+    size = 4
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = MeanSensitivity - 1.96 * SE,
+      ymax = MeanSensitivity + 1.96 * SE
+    ),
+    width = .08,
+    linewidth = .8
+  ) +
+  labs(
+    x = "Test Time",
+    y = "Matching Addends Grouping Sensitivity",
+    color = "Instruction Condition"
+  ) +
+  theme_classic(
+    base_size = 14
+  ) +
+  theme(
+    legend.position = "top"
+  )
+```
+
+
+
+```{r design-participant-feature-change-3}
+ggplot(
+  matching_change,
+  aes(
+    x = TestTime,
+    y = FeatureSensitivity,
+    group = ParticipantID,
+    color = Condition
+  )
+) +
+  geom_line(
+    alpha = .25
+  ) +
+  geom_point(
+    alpha = .45,
+    size = 1.5
+  ) +
+  facet_wrap(
+    ~ Condition
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    x = "Test Time",
+    y = "Matching Addends Grouping Sensitivity"
+  ) +
+  theme_classic(
+    base_size = 13
+  ) +
+  theme(
+    legend.position = "none"
+  )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
