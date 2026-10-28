@@ -12,7 +12,7 @@ Children learn more from math instruction when the teacher gestures, but *why*? 
 * **Design:** pretest → training (instructional video plus a practice problem, repeated three times) → posttest.
 * **Measures, collected before and after instruction:**
 
-  * **Problem solving:** equivalence problems such as `3 + 6 + 5 = 3 + \_\_`.
+  * **Problem solving:** equivalence problems such as `3 + 6 + 5 = 3 + __`.
   * **Encoding:** children saw a problem for 5 seconds and then wrote it from memory. Responses were scored by the number of changes needed to match the original, ignoring number errors (adapted from McNeil \& Alibali, 2004).
   * **Strategy evaluation:** children rated four strategies as "very smart," "kind of smart," or "not so smart" (adapted from Siegler \& Crowley, 1994). Two strategies are correct (Equivalence, Grouping) and two are common errors (Add All, Add to Equal).
   * **Problem categorization:** children sorted problems into groups.
